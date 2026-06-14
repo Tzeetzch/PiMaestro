@@ -3,7 +3,7 @@
    Timing + Follow-You gating live on the Pi, not here. */
 (function () {
   const $ = id => document.getElementById(id);
-  const statusEl = $('status'), groupSel = $('groupSel'), songSel = $('songSel'),
+  const statusEl = $('status'),
         playBtn = $('play'), resetBtn = $('reset'),
         viewBtn = $('view'), soundBtn = $('sound'), songLabel = $('song'),
         handSel = $('handSel'), modeSel = $('modeSel'), instrPanel = $('instrPanel'),
@@ -11,13 +11,35 @@
         loopPanel = $('loopPanel'), scoreEl = $('score'),
         seekEl = $('seek'), seekFill = $('seekfill'), namesBtn = $('names'),
         menuBtn = $('menuBtn'), menu = $('menu'), menuClose = $('menuClose'), startBtn = $('startBtn'),
-        favBtn = $('fav'), uploadBtn = $('uploadBtn'), fileInput = $('fileInput'), splitSel = $('splitSel');
+        favBtn = $('fav'), uploadBtn = $('uploadBtn'), fileInput = $('fileInput'), splitSel = $('splitSel'),
+        menuBack = $('menuBack'), menuTitle = $('menuTitle'), groupTabs = $('groupTabs'), songList = $('songList');
 
-  // Full-screen menu (home/setup) — rebuild its dynamic sections on open so they match the song.
-  function openMenu() { buildInstr(); buildLoop(); menu.hidden = false; }
+  /* ---- multi-screen menu: home -> song picker -> per-song setup -> game; settings off home ---- */
+  const SCREENS = { home: 'screenHome', songs: 'screenSongs', setup: 'screenSetup', settings: 'screenSettings' };
+  const TITLES = { home: '', songs: 'Choose a song', setup: '', settings: 'Settings' };
+  let screen = 'home';
+  function showScreen(name) {
+    screen = name;
+    for (const k in SCREENS) $(SCREENS[k]).hidden = (k !== name);
+    if (name === 'setup') { buildInstr(); buildLoop(); fillSetupHead(); }   // refresh dynamic bits for this song
+    menuTitle.textContent = TITLES[name] || '';
+    menuBack.hidden = (name === 'home');
+    menuClose.hidden = !loadedFile;                 // can only return to a game once a song is loaded
+  }
+  // The ☰ opens the menu where it makes sense: straight to the song's setup if one's loaded, else home.
+  function openMenu() { menu.hidden = false; showScreen(loadedFile ? 'setup' : 'home'); }
   function closeMenu() { menu.hidden = true; }
   menuBtn.onclick = () => { if (menu.hidden) openMenu(); else closeMenu(); };
   menuClose.onclick = closeMenu;
+  menuBack.onclick = () => { showScreen(screen === 'setup' ? 'songs' : 'home'); };
+  $('homeStart').onclick = () => showScreen('songs');
+  $('homeSettings').onclick = () => showScreen('settings');
+  $('homeQuit').onclick = async () => {            // stop the music and return to the home screen
+    setPlayBtn(false);
+    try { await control({ cmd: 'stop' }); } catch (e) {}
+    showScreen('home');
+    try { window.close(); } catch (e) {}           // works only if the tab was opened by a script; harmless otherwise
+  };
   startBtn.onclick = () => { closeMenu(); if (!playing) playBtn.click(); };
 
   // Keyboard-size presets -> MIDI [lowest, highest] note. Keys outside the chosen range
@@ -114,7 +136,7 @@
   // Set which part the player covers (channels + optional hand); the rest becomes background.
   function setPlayChannels(ch, hand) {
     currentPlay = ch.slice(); currentHand = hand || null;
-    PiTV.setPlay(mode === 'listen' ? null : ch, currentHand);
+    PiTV.setPlay(ch, currentHand);            // show only your chosen part (Listen plays the rest for sound)
     control({ cmd: 'play_parts', channels: ch, hand: currentHand }).catch(() => {});
   }
   function applyParts() {
@@ -133,46 +155,71 @@
   }
 
   /* ---- song catalogue (+ Favorites / Recently-played virtual categories) ---- */
-  let songsByGroup = {}, allSongs = [], lib = {};
+  let songsByGroup = {}, allSongs = [], lib = {}, currentGroup = null, selFile = null;
   const FAV = '★ Favorites', RECENT = '◷ Recently played';
   async function loadSongList() {
     try { allSongs = await (await fetch('/songs')).json(); } catch (e) { return; }
     try { lib = await (await fetch('/library')).json(); } catch (e) { lib = {}; }
     songsByGroup = {};
     for (const s of allSongs) (songsByGroup[s.group] = songsByGroup[s.group] || []).push(s);
-    buildGroups();
-    fillSongs();
+    buildGroupTabs();
   }
   function favList() { return allSongs.filter(s => lib[s.file] && lib[s.file].fav); }
   function recentList() {
     return allSongs.filter(s => lib[s.file] && lib[s.file].played)
       .sort((a, b) => lib[b.file].played - lib[a.file].played).slice(0, 20);
   }
-  function buildGroups() {
-    const cur = groupSel.value;
-    groupSel.innerHTML = '';
-    const add = (g, label) => { const o = document.createElement('option'); o.value = g; o.textContent = label; groupSel.appendChild(o); };
-    if (recentList().length) add(RECENT, RECENT);
-    const fn = favList().length; if (fn) add(FAV, FAV + ' (' + fn + ')');
-    Object.keys(songsByGroup).forEach(g => add(g, g + ' (' + songsByGroup[g].length + ')'));
-    if (cur) groupSel.value = cur;                // keep selection if it still exists
-    if (!groupSel.value && groupSel.options.length) groupSel.selectedIndex = 0;
+  function groupNames() {
+    const names = [];
+    if (recentList().length) names.push(RECENT);
+    if (favList().length) names.push(FAV);
+    return names.concat(Object.keys(songsByGroup));
   }
   function songsForGroup(g) {
     if (g === FAV) return favList();
     if (g === RECENT) return recentList();
     return songsByGroup[g] || [];
   }
-  function fillSongs() {
-    songSel.innerHTML = '';
-    songsForGroup(groupSel.value).forEach(s => {
-      const o = document.createElement('option'); o.value = s.file; o.textContent = s.title;
-      songSel.appendChild(o);
+  // Left column: one clickable tab per category. Selecting a tab repaints the song list.
+  function buildGroupTabs() {
+    const names = groupNames();
+    if (!currentGroup || !names.includes(currentGroup)) currentGroup = names[0] || null;
+    groupTabs.innerHTML = '';
+    names.forEach(g => {
+      const b = document.createElement('button');
+      b.className = 'gtab' + (g === currentGroup ? ' on' : '');
+      b.textContent = g + ' (' + songsForGroup(g).length + ')';
+      b.onclick = () => { currentGroup = g; buildGroupTabs(); };
+      groupTabs.appendChild(b);
     });
+    fillSongList();
+  }
+  // Right pane: the songs in the chosen category. Clicking one loads it and goes to setup.
+  function fillSongList() {
+    songList.innerHTML = '';
+    const songs = songsForGroup(currentGroup);
+    if (!songs.length) {
+      const e = document.createElement('li'); e.className = 'hint'; e.textContent = 'No songs here yet.';
+      songList.appendChild(e); return;
+    }
+    songs.forEach(s => {
+      const li = document.createElement('li');
+      li.className = 'songitem' + (s.file === selFile ? ' on' : '');
+      li.textContent = ((lib[s.file] && lib[s.file].fav) ? '★ ' : '') + s.title;
+      li.onclick = () => selectSong(s.file);
+      songList.appendChild(li);
+    });
+  }
+  function fillSetupHead() {
+    if (!currentVM) return;
+    $('setupTitle').textContent = currentVM.title || '—';
+    const shift = currentVM.transpose || 0;
+    const stag = shift ? ' · ' + (shift > 0 ? '+' : '') + (shift / 12) + ' oct' : '';
+    $('setupSub').textContent = currentVM.notes.length + ' notes' + stag;
     updateFavBtn();
   }
   function updateFavBtn() {
-    const f = songSel.value, on = !!(f && lib[f] && lib[f].fav);
+    const f = selFile, on = !!(f && lib[f] && lib[f].fav);
     favBtn.textContent = on ? '★' : '☆';
     favBtn.classList.toggle('on', on);
   }
@@ -180,16 +227,14 @@
     if (!f) return;
     lib[f] = Object.assign({}, lib[f], { played: Date.now() / 1000 });
     control({ cmd: 'played', file: f }).catch(() => {});
-    buildGroups();                                // make Recently-played appear/update
+    buildGroupTabs();                             // make Recently-played appear/update
   }
-  groupSel.onchange = fillSongs;
   favBtn.onclick = () => {
-    const f = songSel.value; if (!f) return;
+    const f = selFile; if (!f) return;
     const on = !(lib[f] && lib[f].fav);
     lib[f] = Object.assign({}, lib[f], { fav: on });
     control({ cmd: 'favorite', file: f, on: on }).catch(() => {});
-    updateFavBtn(); buildGroups();
-    if (groupSel.value === FAV) fillSongs();       // unfavoriting from the Favorites view
+    updateFavBtn(); buildGroupTabs();
   };
   // Upload a MIDI from any device (raw body, filename in the query — no multipart needed).
   uploadBtn.onclick = () => fileInput.click();
@@ -210,7 +255,7 @@
     }
     await loadSongList();                          // refresh catalogue + library once
     const s = last && allSongs.find(x => x.file === last);
-    if (s) { groupSel.value = s.group; fillSongs(); songSel.value = last; await selectSong(last); }
+    if (s) { currentGroup = s.group; buildGroupTabs(); await selectSong(last); }
     uploadBtn.textContent = fail ? ('Added ' + ok + ', ✕' + fail + ' bad') : ('✓ Added ' + ok);
     setTimeout(() => { uploadBtn.textContent = label; }, 2500);
     uploadBtn.disabled = false; fileInput.value = '';
@@ -254,6 +299,7 @@
   // Pick a song: restore its saved settings (part/speed/octave/mode) from the Pi, then load.
   async function selectSong(file) {
     setPlayBtn(false);
+    selFile = file;
     restoring = true;                                   // suppress auto-save during restore
     let s = {};
     try { s = await (await fetch('/settings?file=' + encodeURIComponent(file))).json(); } catch (e) {}
@@ -268,10 +314,12 @@
     await loadSong(file);                               // builds vm with that transpose/range
     if (has && s.hand) handSel.value = s.hand;          // best-effort dropdown label
     if (has && s.play) setPlayChannels(s.play, partHand());   // authoritative part selection
-    PiTV.setPlay(mode === 'listen' ? null : currentPlay);
+    PiTV.setPlay(currentPlay, currentHand);
     control({ cmd: 'speed', mult: +speedSel.value }).catch(() => {});   // sync engine
     control({ cmd: 'mode', mode: mode }).catch(() => {});
     restoring = false;
+    fillSongList();                                     // highlight the picked song
+    if (!menu.hidden) showScreen('setup');              // advance the wizard to its per-song settings
   }
 
   function setPlayBtn(on) {
@@ -282,17 +330,13 @@
 
   /* ---- controls ---- */
   playBtn.onclick = async () => {
-    if (!loadedFile && songSel.value) await selectSong(songSel.value);
+    if (!loadedFile && selFile) await selectSong(selFile);
     if (!loadedFile) return;
     const wantPlay = !playing;            // decide BEFORE the await — `playing` may change during it
     setPlayBtn(wantPlay);
     if (wantPlay) markPlayed(loadedFile); // record into Recently-played
     try { await control({ cmd: wantPlay ? 'play' : 'stop' }); }
     catch (e) { setPlayBtn(!wantPlay); }  // revert if the request failed
-  };
-  songSel.onchange = async () => {
-    updateFavBtn();
-    if (songSel.value) await selectSong(songSel.value);
   };
   resetBtn.onclick = async () => {
     setPlayBtn(false);
@@ -301,7 +345,7 @@
   handSel.onchange = () => applyParts();
   modeSel.onchange = async () => {
     mode = modeSel.value;
-    PiTV.setPlay(mode === 'listen' ? null : currentPlay, currentHand);
+    PiTV.setPlay(currentPlay, currentHand);
     saveCurrent();
     try { await control({ cmd: 'mode', mode: mode }); } catch (e) {}
   };
@@ -487,11 +531,12 @@
       const m = JSON.parse(ev.data);
       if (m.type === 'pos' || m.type === 'hello') {
         if (m.type === 'hello' && m.vm && !currentVM) {   // resync a fresh/reconnected client
-          currentVM = m.vm; loadedFile = m.file || null;
+          currentVM = m.vm; loadedFile = m.file || null; selFile = m.file || null;
           PiTV.setSong(m.vm); buildPartOptions(m.vm); showTranspose(m.vm.transpose || 0);
           songLabel.textContent = '♪ ' + m.vm.title + ' · ' + m.vm.notes.length + ' notes';
           setPlayBtn(!!m.playing);
           if (m.playing) closeMenu();        // resynced to a playing song -> show the stage
+          else if (!menu.hidden) showScreen('setup');   // loaded but idle -> drop into its setup
         }
         PiTV.setPos(m.t, m.waiting, m.wanted);
         const d = currentVM ? currentVM.duration : 0;

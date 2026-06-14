@@ -58,15 +58,48 @@
   .wk.on { background:#58d977; } .wk.wait { background:#f0b429; }
   .bk.on { background:#1f6feb; } .bk.wait { background:#f0b429; }
 
-  /* ---- full-screen MENU (home / setup) ---- */
+  /* ---- full-screen MENU shell (home / song picker / setup / settings) ---- */
   #menu[hidden] { display:none; }
-  #menu { position:fixed; inset:0; z-index:10; background:rgba(9,12,17,.97);
+  #menu { position:fixed; inset:0; z-index:10; background:rgba(9,12,17,.98);
     display:flex; flex-direction:column; }
-  .menu-head { display:flex; align-items:center; gap:14px; padding:18px 28px; border-bottom:1px solid var(--line); }
-  .menu-head .brand { font-size:26px; }
+  .menu-head { display:flex; align-items:center; gap:14px; padding:16px 26px; border-bottom:1px solid var(--line); flex:0 0 auto; }
+  .menu-head .brand { font-size:22px; }
+  .menu-title { font-size:16px; font-weight:600; color:var(--dim); }
   .menu-head .grow { margin-left:auto; }
-  #menuClose { width:48px; height:48px; font-size:22px; }
-  .menu-body { overflow-y:auto; padding:10px 28px 24px; max-width:880px; width:100%; margin:0 auto; }
+  #menuBack, #menuClose { width:46px; height:46px; font-size:20px; }
+
+  .screen { flex:1 1 0; min-height:0; display:flex; flex-direction:column; }
+  .screen[hidden] { display:none; }
+
+  /* HOME — big centred buttons */
+  #screenHome { align-items:center; justify-content:center; }
+  .home-btns { display:flex; flex-direction:column; gap:18px; width:min(420px,80vw); }
+  .bigbtn { font:inherit; font-size:24px; font-weight:800; color:var(--txt); background:var(--ctl);
+    border:1px solid var(--ctlbd); border-radius:14px; padding:22px; cursor:pointer; text-align:center; }
+  .bigbtn:hover { background:var(--ctl2); }
+  #homeStart { background:#2ea043; border-color:#2ea043; color:#fff; }
+  .bigbtn.quit { font-size:18px; color:var(--dim); padding:16px; }
+
+  /* SONG PICKER — group tabs (left) + song list (right) */
+  .songs-wrap { flex:1 1 0; min-height:0; display:flex; }
+  .grouptabs { flex:0 0 34%; max-width:320px; overflow-y:auto; border-right:1px solid var(--line);
+    padding:14px; display:flex; flex-direction:column; gap:6px; }
+  .gtab { font:inherit; font-size:15px; font-weight:600; text-align:left; color:var(--txt); background:transparent;
+    border:1px solid transparent; border-radius:9px; padding:13px 14px; cursor:pointer; }
+  .gtab:hover { background:var(--ctl); }
+  .gtab.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .songlist-pane { flex:1 1 0; min-height:0; display:flex; flex-direction:column; }
+  .songlist { list-style:none; margin:0; padding:14px; overflow-y:auto; flex:1 1 0; }
+  .songitem { padding:14px 16px; border-radius:9px; cursor:pointer; font-size:16px; border:1px solid transparent; }
+  .songitem:hover { background:var(--ctl); }
+  .songitem.on { background:var(--ctl2); border-color:var(--ctlbd); }
+  .songs-foot { flex:0 0 auto; padding:14px 18px; border-top:1px solid var(--line);
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+
+  /* SETUP + SETTINGS — scrollable body with sections */
+  .menu-body { overflow-y:auto; flex:1 1 0; min-height:0; padding:10px 28px 24px; max-width:880px; width:100%; margin:0 auto; }
+  .setup-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:12px 0 4px; }
+  .setup-title { font-size:23px; font-weight:800; }
   .sect { padding:18px 0; border-bottom:1px solid #1b212a; }
   .sect h3 { margin:0 0 14px; font-size:13px; letter-spacing:.1em; text-transform:uppercase; color:#7d8794; }
   .field { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:12px 0; font-size:16px; }
@@ -75,7 +108,7 @@
   .menu-body select { max-width:none; }
   .hint { font-size:13px; color:var(--dim); margin:4px 0 10px; }
   .menu-foot { padding:16px 28px; border-top:1px solid var(--line); display:flex; gap:12px; justify-content:flex-end;
-    max-width:880px; width:100%; margin:0 auto; }
+    max-width:880px; width:100%; margin:0 auto; flex:0 0 auto; }
   #startBtn { background:#2ea043; border-color:#2ea043; color:#fff; font-size:20px; font-weight:800; padding:14px 34px; }
 
   /* rows built by app.js (loop bars, per-part instruments) */
@@ -115,97 +148,122 @@
 
   <aside id="menu" hidden>
     <div class="menu-head">
+      <button id="menuBack" class="btn iconbtn" title="Back" hidden>&#8592;</button>
       <span class="brand">&#127929; PiTV</span>
+      <span id="menuTitle" class="menu-title"></span>
       <span class="grow"></span>
-      <button id="menuClose" class="btn iconbtn" title="Close menu">&#10005;</button>
+      <button id="menuClose" class="btn iconbtn" title="Back to the song" hidden>&#10005;</button>
     </div>
-    <div class="menu-body">
-      <div class="sect">
-        <h3>Song</h3>
-        <div class="field"><span>Category</span><select id="groupSel"></select></div>
-        <div class="field"><span>Song</span>
-          <span style="display:flex;gap:10px;align-items:center;min-width:200px">
-            <select id="songSel" style="flex:1"></select>
-            <button id="fav" class="btn iconbtn" title="Favorite this song">&#9734;</button>
-          </span>
-        </div>
-        <div class="field"><span>Add your own</span>
-          <span style="display:flex;gap:10px;align-items:center;min-width:200px">
+
+    <!-- HOME -->
+    <section id="screenHome" class="screen">
+      <div class="home-btns">
+        <button id="homeStart" class="bigbtn">&#9654; Start</button>
+        <button id="homeSettings" class="bigbtn">&#9881; Settings</button>
+        <button id="homeQuit" class="bigbtn quit">&#9209; Quit</button>
+      </div>
+    </section>
+
+    <!-- SONG PICKER -->
+    <section id="screenSongs" class="screen" hidden>
+      <div class="songs-wrap">
+        <nav id="groupTabs" class="grouptabs"></nav>
+        <div class="songlist-pane">
+          <ul id="songList" class="songlist"></ul>
+          <div class="songs-foot">
             <input id="fileInput" type="file" accept=".mid,.midi,audio/midi" multiple hidden>
             <button id="uploadBtn" class="btn">&#11014; Upload MIDIs</button>
-          </span>
-        </div>
-        <p class="hint">Pick one or many .mid files from any PC — they're saved on the Pi under "Uploads".</p>
-      </div>
-      <div class="sect">
-        <h3>Tracks</h3>
-        <div class="field"><span>Which part you play</span>
-          <select id="handSel">
-            <option value="both">Both hands</option>
-            <option value="R">Right hand</option>
-            <option value="L">Left hand</option>
-          </select>
-        </div>
-        <p class="hint">play = you play it (shown) · off = background (heard, hidden) · mute = silent</p>
-        <div class="field"><span>Hand split (one-track songs)</span>
-          <select id="splitSel" title="Pitch where left & right hands divide (and the treble/bass clef boundary)">
-            <option value="53">F3</option><option value="55">G3</option>
-            <option value="57">A3</option><option value="59">B3</option>
-            <option value="60" selected>C4 — middle C</option>
-            <option value="62">D4</option><option value="64">E4</option>
-            <option value="65">F4</option><option value="67">G4</option>
-          </select>
-        </div>
-        <div id="instrPanel"></div>
-      </div>
-      <div class="sect">
-        <h3>How it plays</h3>
-        <div class="field"><span>Mode</span>
-          <select id="modeSel">
-            <option value="follow">Follow you (waits for you)</option>
-            <option value="along">Play along (keeps going)</option>
-            <option value="listen">Listen (plays itself)</option>
-          </select>
-        </div>
-        <div class="field"><span>Speed</span>
-          <select id="speedSel">
-            <option value="0.5">50%</option><option value="0.6">60%</option>
-            <option value="0.7">70%</option><option value="0.8">80%</option>
-            <option value="0.9">90%</option><option value="1" selected>100%</option>
-            <option value="1.1">110%</option><option value="1.25">125%</option>
-            <option value="1.5">150%</option><option value="2">200%</option>
-          </select>
-        </div>
-        <div class="field"><span>Octave shift</span>
-          <select id="transSel">
-            <option value="auto" selected>Auto (fit keyboard)</option>
-            <option value="24">+2 octaves</option><option value="12">+1 octave</option>
-            <option value="0">No shift (original pitch)</option>
-            <option value="-12">-1 octave</option><option value="-24">-2 octaves</option>
-          </select>
+            <span class="hint">Pick one or many .mid files from any PC &mdash; saved on the Pi under "Uploads".</span>
+          </div>
         </div>
       </div>
-      <div class="sect">
-        <h3>Loop a passage</h3>
-        <div id="loopPanel"></div>
-      </div>
-      <div class="sect">
-        <h3>Display &amp; sound</h3>
-        <div class="field"><span>Note-name labels</span><button id="names" class="btn">Names: on</button></div>
-        <div class="field"><span>Keyboard size</span>
-          <select id="kbdSel" title="Match your keyboard; other keys are dimmed">
-            <option value="88">88 keys</option><option value="76">76 keys</option>
-            <option value="61">61 keys</option><option value="49">49 keys</option>
-            <option value="37">37 keys</option><option value="25">25 keys</option>
-          </select>
+    </section>
+
+    <!-- PER-SONG SETUP -->
+    <section id="screenSetup" class="screen" hidden>
+      <div class="menu-body">
+        <div class="setup-head">
+          <div>
+            <div id="setupTitle" class="setup-title">&mdash;</div>
+            <div id="setupSub" class="hint"></div>
+          </div>
+          <button id="fav" class="btn iconbtn" title="Favorite this song">&#9734;</button>
         </div>
-        <div class="field"><span>Sound on this device</span><button id="sound" class="btn">&#128266; Off</button></div>
-        <p class="hint">On the Pi/TV the sound comes from the Pi itself — leave this off. Turn it on for a tablet or laptop.</p>
+        <div class="sect">
+          <h3>Tracks</h3>
+          <div class="field"><span>Which part you play</span>
+            <select id="handSel">
+              <option value="both">Both hands</option>
+              <option value="R">Right hand</option>
+              <option value="L">Left hand</option>
+            </select>
+          </div>
+          <div class="field"><span>Hand split (one-track songs)</span>
+            <select id="splitSel" title="Pitch where left & right hands divide (and the treble/bass clef boundary)">
+              <option value="53">F3</option><option value="55">G3</option>
+              <option value="57">A3</option><option value="59">B3</option>
+              <option value="60" selected>C4 — middle C</option>
+              <option value="62">D4</option><option value="64">E4</option>
+              <option value="65">F4</option><option value="67">G4</option>
+            </select>
+          </div>
+          <div id="instrPanel"></div>
+        </div>
+        <div class="sect">
+          <h3>How it plays</h3>
+          <div class="field"><span>Mode</span>
+            <select id="modeSel">
+              <option value="follow">Follow you (waits for you)</option>
+              <option value="along">Play along (keeps going)</option>
+              <option value="listen">Listen (plays itself)</option>
+            </select>
+          </div>
+          <div class="field"><span>Speed</span>
+            <select id="speedSel">
+              <option value="0.5">50%</option><option value="0.6">60%</option>
+              <option value="0.7">70%</option><option value="0.8">80%</option>
+              <option value="0.9">90%</option><option value="1" selected>100%</option>
+              <option value="1.1">110%</option><option value="1.25">125%</option>
+              <option value="1.5">150%</option><option value="2">200%</option>
+            </select>
+          </div>
+          <div class="field"><span>Octave shift</span>
+            <select id="transSel">
+              <option value="auto" selected>Auto (fit keyboard)</option>
+              <option value="24">+2 octaves</option><option value="12">+1 octave</option>
+              <option value="0">No shift (original pitch)</option>
+              <option value="-12">-1 octave</option><option value="-24">-2 octaves</option>
+            </select>
+          </div>
+        </div>
+        <div class="sect">
+          <h3>Loop a passage</h3>
+          <div id="loopPanel"></div>
+        </div>
       </div>
-    </div>
-    <div class="menu-foot">
-      <button id="startBtn" class="btn">&#9654; Start</button>
-    </div>
+      <div class="menu-foot">
+        <button id="startBtn" class="btn">&#9654; Start</button>
+      </div>
+    </section>
+
+    <!-- DEVICE SETTINGS -->
+    <section id="screenSettings" class="screen" hidden>
+      <div class="menu-body">
+        <div class="sect">
+          <h3>Display &amp; sound</h3>
+          <div class="field"><span>Note-name labels</span><button id="names" class="btn">Names: on</button></div>
+          <div class="field"><span>Keyboard size</span>
+            <select id="kbdSel" title="Match your keyboard; other keys are dimmed">
+              <option value="88">88 keys</option><option value="76">76 keys</option>
+              <option value="61">61 keys</option><option value="49">49 keys</option>
+              <option value="37">37 keys</option><option value="25">25 keys</option>
+            </select>
+          </div>
+          <div class="field"><span>Sound on this device</span><button id="sound" class="btn">&#128266; Off</button></div>
+          <p class="hint">On the Pi/TV the sound comes from the Pi itself &mdash; leave this off. Turn it on for a tablet or laptop.</p>
+        </div>
+      </div>
+    </section>
   </aside>
 
   <script src="vendor/wafplayer.js"></script>

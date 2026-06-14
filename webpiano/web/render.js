@@ -78,13 +78,24 @@ const PiTV = (function () {
     // position, and the top note of each chord (for the note-name label).
     const beats = vm.beats || [];
     const tops = {};
-    let maxDur = 0, anchorT = -1e9, anchorB = 0;
-    const SNAP = 0.035;                  // notes within this (sec) share one column (PianoBooster "slots")
+    let maxDur = 0;
+    // ENGRAVING LAYOUT: group near-simultaneous notes into columns ("slots"), and lay them out
+    // with a MINIMUM gap so dense bars GROW to fit their notes (sparse passages stay beat-spaced).
+    // _lx is the column's horizontal position in beat-units; anchT/anchLx map real time -> _lx so
+    // the playhead stays time-correct (scroll just speeds up through dense bars). game view is
+    // unaffected (it uses time directly).
+    const SLOT_EPS = 0.030, MIN_GAP = 0.30;
+    const anchT = [], anchLx = [];
+    let slotT = -1e9, slotLx = 0, prevB = 0, first = true;
     for (let i = 0; i < vm.notes.length; i++) {     // notes are sorted by start time (song.py)
       const nt = vm.notes[i];
-      // snap near-simultaneous notes to a common beat so chords stack cleanly instead of smearing
-      if (nt.t - anchorT > SNAP) { anchorT = nt.t; anchorB = beatPos(nt.t, beats); }
-      nt._b = anchorB;
+      if (nt.t - slotT > SLOT_EPS) {                // start a new column
+        const b = beatPos(nt.t, beats);
+        if (first) { slotLx = b; first = false; } else { slotLx += Math.max(MIN_GAP, b - prevB); }
+        prevB = b; slotT = nt.t;
+        anchT.push(slotT); anchLx.push(slotLx);
+      }
+      nt._lx = slotLx;
       nt._top = false;
       if (nt.d > maxDur) maxDur = nt.d;
       const k = nt.staff + '_' + Math.round(nt.t / 0.05);
@@ -92,6 +103,7 @@ const PiTV = (function () {
     }
     for (const k in tops) vm.notes[tops[k]]._top = true;
     vm._maxDur = maxDur;                 // longest note (sec) — windowing margin (R.1)
+    vm._anchT = anchT; vm._anchLx = anchLx;
   }
   // R.1: notes are sorted by start time (song.py), and _b is monotonic in t, so we can
   // binary-search the first visible note instead of scanning all N every frame.
@@ -101,7 +113,25 @@ const PiTV = (function () {
     while (lo < hi) { const m = (lo + hi) >> 1; if (key(notes[m]) < target) lo = m + 1; else hi = m; }
     return lo;
   }
-  const keyT = nt => nt.t, keyB = nt => nt._b;
+  const keyT = nt => nt.t, keyLx = nt => nt._lx;
+  // piecewise-linear interpolation over sorted xs->ys, extrapolating at the end slopes.
+  // Used both ways: time->layout-x (anchT,anchLx) and layout-x->time (anchLx,anchT).
+  function interp(xs, ys, x) {
+    const n = xs.length;
+    if (n === 0) return x;
+    if (n === 1) return ys[0] + (x - xs[0]);
+    if (x <= xs[0]) { const r = (ys[1] - ys[0]) / ((xs[1] - xs[0]) || 1); return ys[0] + (x - xs[0]) * r; }
+    if (x >= xs[n - 1]) { const r = (ys[n - 1] - ys[n - 2]) / ((xs[n - 1] - xs[n - 2]) || 1); return ys[n - 1] + (x - xs[n - 1]) * r; }
+    let lo = 0, hi = n - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (xs[m] <= x) lo = m; else hi = m - 1; }
+    const f = (x - xs[lo]) / ((xs[lo + 1] - xs[lo]) || 1);
+    return ys[lo] + f * (ys[lo + 1] - ys[lo]);
+  }
+  function nbound(arr, target) {            // lower-bound index in a plain sorted number array
+    let lo = 0, hi = arr.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < target) lo = m + 1; else hi = m; }
+    return lo;
+  }
   function setView(v) { view = v; dirty = true; staticDirty = true; }
   // channels the player covers (Set) -> the rest is hidden; null = show all (Listen).
   // hand ('R'/'L') optionally narrows to one hand of a single-channel part (the other dims).
@@ -313,13 +343,15 @@ const PiTV = (function () {
     if (!song) return;
     const { step, s, trebleC, bassC, scrollX, endX, playX, markTop, markBot, yOf } = g;
     {
-      // ---- scrolling region (beat-spaced; clipped so it can't bleed into the header) ----
+      // ---- scrolling region (engraving-spaced; clipped so it can't bleed into the header) ----
       const beats = song.beats, num = (song.timesig && song.timesig[0]) || 4;
+      const aT = song._anchT || [], aLx = song._anchLx || [];   // real time <-> layout-x anchors
       const BEATS_AHEAD = 8;
-      const ppb = Math.max(24, (endX - playX) / BEATS_AHEAD);   // px per beat
-      const nowBeat = beatPos(now, beats);
-      const bx = b => playX + (b - nowBeat) * ppb;
+      const ppb = Math.max(24, (endX - playX) / BEATS_AHEAD);   // px per layout unit
+      const nowLx = interp(aT, aLx, now);            // playhead position in the variable layout
+      const bx = lx => playX + (lx - nowLx) * ppb;
       const behind = (playX - scrollX) / ppb + 1;
+      const lxLo = nowLx - behind - 0.5, lxHi = nowLx + BEATS_AHEAD + 0.5;
 
       ctx.save();
       ctx.beginPath(); ctx.rect(scrollX - 1, 0, endX - scrollX + 2, H); ctx.clip();
@@ -327,31 +359,30 @@ const PiTV = (function () {
       // play zone band
       ctx.fillStyle = C_ZONE; ctx.fillRect(playX - 9 * s, markTop, 18 * s, markBot - markTop);
 
-      // loop region: shade the looped bars + mark its edges (drill a hard passage)
+      // loop region: shade the looped bars + mark its edges (loopA/loopB are times -> layout x)
       if (loopA != null && loopB != null) {
-        const xa = bx(beatPos(loopA, beats)), xz = bx(beatPos(loopB, beats));
+        const xa = bx(interp(aT, aLx, loopA)), xz = bx(interp(aT, aLx, loopB));
         ctx.fillStyle = C_LOOP; ctx.fillRect(xa, markTop, xz - xa, markBot - markTop);
         ctx.strokeStyle = C_LOOPEDGE; ctx.lineWidth = Math.max(1.4, 1.6 * s);
         for (const xe of [xa, xz]) { ctx.beginPath(); ctx.moveTo(xe, markTop); ctx.lineTo(xe, markBot); ctx.stroke(); }
       }
 
-      // beat lines (non-downbeats) + bar lines (downbeats: two per-staff segments, slight lead)
-      const jStart = Math.max(0, Math.floor(nowBeat - behind)), jEnd = Math.ceil(nowBeat + BEATS_AHEAD) + 1;
-      for (let j = jStart; j <= jEnd && j < beats.length; j++) {
-        const x = bx(j);
-        // tall counting line on EVERY beat (downbeat = beat 1 a touch brighter)
-        if (x >= scrollX && x <= endX) {
+      // beat + bar lines: each beat's TIME mapped through the layout, so they track the notes.
+      // Bound the beat indices by the visible time window (inverse map of the lx window).
+      const tLo = interp(aLx, aT, lxLo), tHi = interp(aLx, aT, lxHi);
+      const jStart = Math.max(0, nbound(beats, tLo) - 1), jEnd = Math.min(beats.length - 1, nbound(beats, tHi));
+      for (let j = jStart; j <= jEnd; j++) {
+        const x = bx(interp(aT, aLx, beats[j]));
+        if (x >= scrollX && x <= endX) {              // tall counting line on EVERY beat
           ctx.strokeStyle = (j % num === 0) ? C_BARMK : C_BEAT; ctx.lineWidth = Math.max(1, s);
           ctx.beginPath(); ctx.moveTo(x, markTop); ctx.lineTo(x, markBot); ctx.stroke();
         }
-        // bar line within the staves, just before the downbeat (PB cfg_barGap lead)
-        if (j % num === 0) {
-          const xb = bx(j - 0.3);
+        if (j % num === 0) {                          // bar line within the staves, slight lead
+          const xb = x - 0.3 * ppb;
           if (xb < scrollX || xb > endX) continue;
           ctx.strokeStyle = C_BAR; ctx.lineWidth = Math.max(1.4, 1.7 * s);
           ctx.beginPath(); ctx.moveTo(xb, yOf('treble', 4)); ctx.lineTo(xb, yOf('treble', -4)); ctx.stroke();
           ctx.beginPath(); ctx.moveTo(xb, yOf('bass', 4)); ctx.lineTo(xb, yOf('bass', -4)); ctx.stroke();
-          // bar number, above the staff just right of the bar line
           const barNo = Math.round(j / num) + 1;
           ctx.fillStyle = C_BARNUM; ctx.font = '600 ' + (step * 1.25).toFixed(0) + 'px system-ui';
           ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
@@ -362,16 +393,14 @@ const PiTV = (function () {
       ctx.strokeStyle = waiting ? C_WANT : C_NOW; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(playX, markTop); ctx.lineTo(playX, markBot); ctx.stroke();
 
-      // R.1: window to the visible beat range via binary search (notes sorted by _b).
+      // window to the visible layout range via binary search (notes sorted by _lx)
       const notes = song.notes;
-      const bHi = nowBeat + BEATS_AHEAD + 0.5;
-      let i = lbound(notes, keyB, nowBeat - behind - 0.5);
+      let i = lbound(notes, keyLx, lxLo);
       for (; i < notes.length; i++) {
         const nt = notes[i];
-        const nb = nt._b;                             // _b precomputed in setSong
-        if (nb > bHi) break;
+        if (nt._lx > lxHi) break;
         if (playSet && !playSet.has(nt.ch)) continue;   // hide parts you don't play (background)
-        const x = bx(nb); if (x < scrollX - step || x > endX) continue;
+        const x = bx(nt._lx); if (x < scrollX - step || x > endX) continue;
         const y = yOf(nt.staff, nt.idx);
         const mine = (nt.n >= rangeLo && nt.n <= rangeHi) && (!playHand || nt.hand === playHand);
         const col = (Math.abs(nt.t - now) < 0.06 && wantedSet[nt.n]) ? C_WANT : (mine ? C_NOTE : C_DIM);
