@@ -78,10 +78,13 @@ const PiTV = (function () {
     // position, and the top note of each chord (for the note-name label).
     const beats = vm.beats || [];
     const tops = {};
-    let maxDur = 0;
-    for (let i = 0; i < vm.notes.length; i++) {
+    let maxDur = 0, anchorT = -1e9, anchorB = 0;
+    const SNAP = 0.035;                  // notes within this (sec) share one column (PianoBooster "slots")
+    for (let i = 0; i < vm.notes.length; i++) {     // notes are sorted by start time (song.py)
       const nt = vm.notes[i];
-      nt._b = beatPos(nt.t, beats);
+      // snap near-simultaneous notes to a common beat so chords stack cleanly instead of smearing
+      if (nt.t - anchorT > SNAP) { anchorT = nt.t; anchorB = beatPos(nt.t, beats); }
+      nt._b = anchorB;
       nt._top = false;
       if (nt.d > maxDur) maxDur = nt.d;
       const k = nt.staff + '_' + Math.round(nt.t / 0.05);
