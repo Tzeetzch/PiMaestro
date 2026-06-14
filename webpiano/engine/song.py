@@ -88,14 +88,14 @@ def _detect_hands(raw, programs):
     return ch, ch
 
 
-def _note_hand(ch, pitch, left, right):
-    """Staff (R/L) for notation: by detected hand channel, else a middle-C pitch split."""
+def _note_hand(ch, pitch, left, right, split):
+    """Which hand (R/L): by detected hand channel, else a pitch split (the split point)."""
     if left is not None and right is not None and left != right:
         if ch == right:
             return "R"
         if ch == left:
             return "L"
-    return "R" if pitch >= MIDDLE_C else "L"
+    return "R" if pitch >= split else "L"
 
 
 def _raw_notes(tracks):
@@ -158,10 +158,16 @@ def _grid_times(step_ticks, ppqn, tmap, duration):
     return times
 
 
-def build_view_model(path: str, transpose=0, kbd_lo=None, kbd_hi=None) -> dict:
+def build_view_model(path: str, transpose=0, kbd_lo=None, kbd_hi=None, split=MIDDLE_C) -> dict:
     """transpose: semitones to shift every note (use octaves for keyboard-fit), or the
     string 'auto' to pick the octave shift that best fits [kbd_lo, kbd_hi]. The applied
-    shift is returned as vm['transpose']."""
+    shift is returned as vm['transpose'].
+    split: the pitch boundary between left/right hand AND treble/bass staff (default
+    middle C); used per-note for the hand fallback (single-channel songs) and the staff."""
+    try:
+        split = max(21, min(108, int(split)))
+    except (TypeError, ValueError):
+        split = MIDDLE_C
     pm = parse_midi(path)
     tmap = _tempo_map(pm.tracks, pm.ppqn)
     key, timesig = _first_meta(pm.tracks)
@@ -188,11 +194,11 @@ def build_view_model(path: str, transpose=0, kbd_lo=None, kbd_hi=None) -> dict:
         pitch = max(0, min(127, pitch0 + shift))
         t = _tick_to_sec(tmap, pm.ppqn, st)
         end = _tick_to_sec(tmap, pm.ppqn, en)
-        hand = _note_hand(ch, pitch, left, right)        # which PART (channel) — for play/colour
-        # Staff (treble/bass) follows PITCH, not channel — a single channel can span both
-        # hands (e.g. a full piano part), so placing every note on one staff is wrong. This
-        # is how real notation / PianoBooster engrave: middle C and up -> treble.
-        staff = "treble" if pitch >= MIDDLE_C else "bass"
+        hand = _note_hand(ch, pitch, left, right, split)  # which hand — for play/colour
+        # Staff (treble/bass) follows PITCH at the split point, not channel — a single channel
+        # can span both hands (e.g. a full piano part), so placing every note on one staff is
+        # wrong. This is how real notation / PianoBooster engrave: at/above the split -> treble.
+        staff = "treble" if pitch >= split else "bass"
         idx, acc = note_pos("R" if staff == "treble" else "L", pitch, key)
         notes.append({
             "n": pitch, "t": round(t, 3), "d": round(max(end - t, 0.05), 3),
@@ -222,6 +228,7 @@ def build_view_model(path: str, transpose=0, kbd_lo=None, kbd_hi=None) -> dict:
     return {
         "title": title,
         "transpose": shift,
+        "split": split,
         "duration": round(duration, 3),
         "ppqn": pm.ppqn,
         "keysig": key,

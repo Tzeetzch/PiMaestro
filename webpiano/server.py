@@ -208,7 +208,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
             lo, hi = req.get("lo"), req.get("hi")
             try:
-                vm = build_view_model(path, req.get("transpose", 0), lo, hi)
+                vm = build_view_model(path, req.get("transpose", 0), lo, hi, req.get("split") or 60)
             except Exception as e:                          # noqa: BLE001
                 self.send_error(500, f"parse failed: {e}")
                 return

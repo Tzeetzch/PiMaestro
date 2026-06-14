@@ -11,7 +11,7 @@
         loopPanel = $('loopPanel'), scoreEl = $('score'),
         seekEl = $('seek'), seekFill = $('seekfill'), namesBtn = $('names'),
         menuBtn = $('menuBtn'), menu = $('menu'), menuClose = $('menuClose'), startBtn = $('startBtn'),
-        favBtn = $('fav'), uploadBtn = $('uploadBtn'), fileInput = $('fileInput');
+        favBtn = $('fav'), uploadBtn = $('uploadBtn'), fileInput = $('fileInput'), splitSel = $('splitSel');
 
   // Full-screen menu (home/setup) — rebuild its dynamic sections on open so they match the song.
   function openMenu() { buildInstr(); buildLoop(); menu.hidden = false; }
@@ -32,6 +32,7 @@
 
   let loadedFile = null, mode = 'follow', playing = false, currentVM = null, currentPlay = [], currentHand = null;
   let transpose = 'auto';                       // octave shift to fit the keyboard ('auto' or semitones)
+  let split = 60;                               // left/right hand + treble/bass split pitch (middle C)
   let restoring = false;                        // suppress auto-save while applying saved settings
   function kbdRange() { return KBD_RANGES[kbdSel.value] || KBD_RANGES[88]; }
 
@@ -40,7 +41,7 @@
     if (restoring || !loadedFile) return;
     control({ cmd: 'save_settings', file: loadedFile, settings: {
       hand: handSel.value, play: currentPlay, speed: speedSel.value,
-      transpose: transSel.value, mode: modeSel.value,
+      transpose: transSel.value, mode: modeSel.value, split: splitSel.value,
     } }).catch(() => {});
   }
 
@@ -67,6 +68,11 @@
   transSel.onchange = async () => {
     transpose = transSel.value === 'auto' ? 'auto' : +transSel.value;
     if (loadedFile) await loadSong(loadedFile, true);
+    saveCurrent();
+  };
+  splitSel.onchange = async () => {
+    split = +splitSel.value;
+    if (loadedFile) await loadSong(loadedFile, true);   // rebuilds hands/staff at the new split
     saveCurrent();
   };
   speedSel.onchange = () => {
@@ -225,7 +231,7 @@
   async function loadSong(file, keep) {
     try {
       const [lo, hi] = kbdRange();
-      const body = { cmd: 'load', file: file, transpose: transpose, lo: lo, hi: hi };
+      const body = { cmd: 'load', file: file, transpose: transpose, lo: lo, hi: hi, split: split };
       if (keep) body.play = currentPlay;
       const vm = await control(body);
       loadedFile = file;
@@ -254,8 +260,10 @@
     const has = s && Object.keys(s).length;
     if (has && s.speed) speedSel.value = s.speed;       // else: speed carries over
     transSel.value = (has && s.transpose) ? s.transpose : 'auto';   // fresh song -> auto-fit
+    splitSel.value = (has && s.split) ? s.split : '60';             // fresh song -> middle C
     if (has && s.mode) modeSel.value = s.mode;
     transpose = transSel.value === 'auto' ? 'auto' : +transSel.value;
+    split = +splitSel.value;
     mode = modeSel.value;
     await loadSong(file);                               // builds vm with that transpose/range
     if (has && s.hand) handSel.value = s.hand;          // best-effort dropdown label
