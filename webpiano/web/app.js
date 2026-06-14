@@ -12,7 +12,10 @@
         seekEl = $('seek'), seekFill = $('seekfill'), namesBtn = $('names'),
         menuBtn = $('menuBtn'), menu = $('menu'), menuClose = $('menuClose'), startBtn = $('startBtn'),
         favBtn = $('fav'), uploadBtn = $('uploadBtn'), fileInput = $('fileInput'), splitSel = $('splitSel'),
-        menuBack = $('menuBack'), menuTitle = $('menuTitle'), groupTabs = $('groupTabs'), songList = $('songList');
+        menuBack = $('menuBack'), menuTitle = $('menuTitle'), groupTabs = $('groupTabs'), songList = $('songList'),
+        splitField = $('splitField'), modeHint = $('modeHint'),
+        finish = $('finish'), finStars = $('finStars'), finSub = $('finSub'), finAgain = $('finAgain'), finPick = $('finPick'),
+        countin = $('countin');
 
   /* ---- multi-screen menu: home -> song picker -> per-song setup -> game; settings off home ---- */
   const SCREENS = { home: 'screenHome', songs: 'screenSongs', setup: 'screenSetup', settings: 'screenSettings' };
@@ -21,10 +24,16 @@
   function showScreen(name) {
     screen = name;
     for (const k in SCREENS) $(SCREENS[k]).hidden = (k !== name);
-    if (name === 'setup') { buildInstr(); buildLoop(); fillSetupHead(); }   // refresh dynamic bits for this song
+    if (name === 'setup') {                         // refresh dynamic bits for this song
+      buildInstr(); buildLoop(); fillSetupHead(); updateModeHint();
+      // Hand split only matters when both hands share one track (else R/L are real channels).
+      const oneTrack = !!(currentVM && currentVM.rightChan != null && currentVM.rightChan === currentVM.leftChan);
+      splitField.style.display = oneTrack ? '' : 'none';
+    }
     menuTitle.textContent = TITLES[name] || '';
     menuBack.hidden = (name === 'home');
     menuClose.hidden = !loadedFile;                 // can only return to a game once a song is loaded
+    if (kbd) setTimeout(() => focusFirst(), 0);     // land the remote's focus on this screen
   }
   // The ☰ opens the menu where it makes sense: straight to the song's setup if one's loaded, else home.
   function openMenu() { menu.hidden = false; showScreen(loadedFile ? 'setup' : 'home'); }
@@ -34,13 +43,16 @@
   menuBack.onclick = () => { showScreen(screen === 'setup' ? 'songs' : 'home'); };
   $('homeStart').onclick = () => showScreen('songs');
   $('homeSettings').onclick = () => showScreen('settings');
-  $('homeQuit').onclick = async () => {            // stop the music and return to the home screen
-    setPlayBtn(false);
-    try { await control({ cmd: 'stop' }); } catch (e) {}
-    showScreen('home');
-    try { window.close(); } catch (e) {}           // works only if the tab was opened by a script; harmless otherwise
-  };
+  startBtn.innerHTML = '&#9654; Play now';                 // distinct verb from Home "Start" (which just browses)
   startBtn.onclick = () => { closeMenu(); if (!playing) playBtn.click(); };
+
+  // Per-mode plain-language hint shown under the Mode dropdown.
+  const MODE_HINTS = {
+    follow: 'The song pauses and waits until you press the right keys.',
+    along: 'The song keeps going at a steady speed — try to keep up.',
+    listen: 'The song plays itself so you can watch and listen.',
+  };
+  function updateModeHint() { modeHint.textContent = MODE_HINTS[modeSel.value] || ''; }
 
   // Keyboard-size presets -> MIDI [lowest, highest] note. Keys outside the chosen range
   // are dimmed so the lit part of the on-screen keyboard matches the player's hardware.
@@ -56,15 +68,23 @@
   let transpose = 'auto';                       // octave shift to fit the keyboard ('auto' or semitones)
   let split = 60;                               // left/right hand + treble/bass split pitch (middle C)
   let restoring = false;                        // suppress auto-save while applying saved settings
+  let loadSeq = 0;                              // monotonic load token; a stale async load bails instead of clobbering
+  let lastT = 0;                                // last streamed play position (for keyboard seek)
   function kbdRange() { return KBD_RANGES[kbdSel.value] || KBD_RANGES[88]; }
 
   // Per-song settings live on the Pi (keyed by file) so they follow the song to any client.
+  // Debounced so dragging a select through intermediate values doesn't rewrite the whole file each step.
+  let saveTimer = null;
   function saveCurrent() {
     if (restoring || !loadedFile) return;
-    control({ cmd: 'save_settings', file: loadedFile, settings: {
-      hand: handSel.value, play: currentPlay, speed: speedSel.value,
-      transpose: transSel.value, mode: modeSel.value, split: splitSel.value,
-    } }).catch(() => {});
+    const file = loadedFile;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      control({ cmd: 'save_settings', file: file, settings: {
+        hand: handSel.value, play: currentPlay, speed: speedSel.value,
+        transpose: transSel.value, mode: modeSel.value, split: splitSel.value,
+      } }).catch(() => {});
+    }, 350);
   }
 
   /* ---- saved preferences (keyboard size + speed) ---- */
@@ -205,7 +225,10 @@
     songs.forEach(s => {
       const li = document.createElement('li');
       li.className = 'songitem' + (s.file === selFile ? ' on' : '');
+      li.tabIndex = 0;                                    // focusable for D-pad / remote
       li.textContent = ((lib[s.file] && lib[s.file].fav) ? '★ ' : '') + s.title;
+      const best = +(localStorage.getItem(bestKey(s.file)) || 0);
+      if (best) { const sp = document.createElement('span'); sp.className = 'stars-mini'; sp.textContent = ' ' + '★'.repeat(best); li.appendChild(sp); }
       li.onclick = () => selectSong(s.file);
       songList.appendChild(li);
     });
@@ -261,6 +284,19 @@
     uploadBtn.disabled = false; fileInput.value = '';
   };
 
+  // Adopt the engine's authoritative snapshot (sent in the SSE 'hello' on connect / song change),
+  // so a reconnecting or second client matches what the Pi is actually playing — not a default.
+  function adoptHello(m) {
+    currentVM = m.vm; loadedFile = m.file || null; selFile = m.file || null;
+    PiTV.setSong(m.vm); buildPartOptions(m.vm); showTranspose(m.vm.transpose || 0);
+    songLabel.textContent = '♪ ' + m.vm.title + ' · ' + m.vm.notes.length + ' notes';
+    if (m.speed != null) speedSel.value = String(m.speed);
+    if (m.mode) { modeSel.value = m.mode; mode = m.mode; }
+    if (m.hand === 'R' || m.hand === 'L') handSel.value = m.hand;
+    if (Array.isArray(m.play)) { currentPlay = m.play.slice(); currentHand = m.hand || null; PiTV.setPlay(currentPlay, currentHand); }
+    updateModeHint();
+  }
+
   // Show the octave shift the engine actually applied (esp. when Auto picks one).
   function showTranspose(applied) {
     const opt = transSel.querySelector('option[value="auto"]');
@@ -273,12 +309,14 @@
 
   // Load into the engine (which returns the view-model for us to render). keep=true re-loads
   // the current song (after a transpose/keyboard change) WITHOUT resetting the chosen parts.
-  async function loadSong(file, keep) {
+  async function loadSong(file, keep, token) {
+    if (token == null) token = ++loadSeq;        // standalone call (e.g. a select onchange) gets its own token
     try {
       const [lo, hi] = kbdRange();
       const body = { cmd: 'load', file: file, transpose: transpose, lo: lo, hi: hi, split: split };
       if (keep) body.play = currentPlay;
       const vm = await control(body);
+      if (token !== loadSeq) return false;        // a newer load started while we awaited — drop this one
       loadedFile = file;
       currentVM = vm;
       PiTV.setSong(vm);
@@ -290,19 +328,23 @@
       const shift = vm.transpose || 0;
       const stag = shift ? ' · ' + (shift > 0 ? '+' : '') + (shift / 12) + ' oct' : '';
       songLabel.textContent = '♪ ' + vm.title + ' · ' + vm.notes.length + ' notes' + stag;
+      return true;
     } catch (e) {
       songLabel.textContent = 'could not load song';
       loadedFile = null;
+      return false;
     }
   }
 
   // Pick a song: restore its saved settings (part/speed/octave/mode) from the Pi, then load.
   async function selectSong(file) {
+    const my = ++loadSeq;                               // claim this load; a newer pick invalidates us
     setPlayBtn(false);
     selFile = file;
     restoring = true;                                   // suppress auto-save during restore
     let s = {};
     try { s = await (await fetch('/settings?file=' + encodeURIComponent(file))).json(); } catch (e) {}
+    if (my !== loadSeq) return;                         // a newer selectSong started during the fetch
     const has = s && Object.keys(s).length;
     if (has && s.speed) speedSel.value = s.speed;       // else: speed carries over
     transSel.value = (has && s.transpose) ? s.transpose : 'auto';   // fresh song -> auto-fit
@@ -311,13 +353,15 @@
     transpose = transSel.value === 'auto' ? 'auto' : +transSel.value;
     split = +splitSel.value;
     mode = modeSel.value;
-    await loadSong(file);                               // builds vm with that transpose/range
+    const ok = await loadSong(file, false, my);         // builds vm with that transpose/range (same token)
+    if (my !== loadSeq) return;                         // superseded while loading
+    restoring = false;
+    if (!ok) return;
     if (has && s.hand) handSel.value = s.hand;          // best-effort dropdown label
     if (has && s.play) setPlayChannels(s.play, partHand());   // authoritative part selection
     PiTV.setPlay(currentPlay, currentHand);
     control({ cmd: 'speed', mult: +speedSel.value }).catch(() => {});   // sync engine
     control({ cmd: 'mode', mode: mode }).catch(() => {});
-    restoring = false;
     fillSongList();                                     // highlight the picked song
     if (!menu.hidden) showScreen('setup');              // advance the wizard to its per-song settings
   }
@@ -334,7 +378,7 @@
     if (!loadedFile) return;
     const wantPlay = !playing;            // decide BEFORE the await — `playing` may change during it
     setPlayBtn(wantPlay);
-    if (wantPlay) markPlayed(loadedFile); // record into Recently-played
+    if (wantPlay) { markPlayed(loadedFile); endedShown = false; finish.hidden = true; }  // fresh run
     try { await control({ cmd: wantPlay ? 'play' : 'stop' }); }
     catch (e) { setPlayBtn(!wantPlay); }  // revert if the request failed
   };
@@ -345,6 +389,7 @@
   handSel.onchange = () => applyParts();
   modeSel.onchange = async () => {
     mode = modeSel.value;
+    updateModeHint();
     PiTV.setPlay(currentPlay, currentHand);
     saveCurrent();
     try { await control({ cmd: 'mode', mode: mode }); } catch (e) {}
@@ -480,28 +525,33 @@
       soundBtn.innerHTML = soundOn ? '&#128266; On' : '&#128266; Off';
     } catch (e) { soundBtn.textContent = 'sound error'; }
   };
-  // WebAudioFont schedules nodes per voice; on a weak browser too many at once make the
-  // audio engine choke and stop. Cap total simultaneous voices and steal the oldest, so it
-  // degrades gracefully (drops a stale note) instead of cutting out entirely.
-  const MAX_VOICES = 24;
-  let order = [];                       // [{map, n}] oldest-first, across keys + accompaniment
-  function drop(o) { if (o.map[o.n]) { try { o.map[o.n].cancel(); } catch (e) {} delete o.map[o.n]; } }
-  function play1(map, n, vel) {
+  // WebAudioFont schedules nodes per voice; too many at once make a weak browser choke. Cap and
+  // steal the oldest so it degrades gracefully. Live keys and accompaniment have SEPARATE pools so
+  // sustained backing can never steal the player's own just-pressed key. Each voice is scheduled
+  // with a bounded length, so a dropped note-off self-releases instead of ringing forever.
+  const LIVE_MAX = 12, AUTO_MAX = 18, MAX_LEN = 8, RELEASE = 0.08;
+  const liveOrder = [], autoOrder = [];
+  function poolFor(map) { return map === envs ? liveOrder : autoOrder; }
+  function endVoice(map, n, when) {
+    if (map[n]) { try { map[n].cancel(when != null ? when : actx.currentTime + RELEASE); } catch (e) {} delete map[n]; }
+  }
+  function play1(map, n, vel, cap) {
     if (!soundOn || !player) return;
-    if (map[n]) { try { map[n].cancel(); } catch (e) {} order = order.filter(o => !(o.map === map && o.n === n)); }
-    while (order.length >= MAX_VOICES) drop(order.shift());      // steal oldest voice
-    map[n] = player.queueWaveTable(actx, actx.destination, preset, actx.currentTime, n, 9999, Math.max(0.2, vel / 127));
-    order.push({ map: map, n: n });
+    const order = poolFor(map);
+    if (map[n]) { try { map[n].cancel(); } catch (e) {} const i = order.indexOf(n); if (i >= 0) order.splice(i, 1); }
+    while (order.length >= cap) endVoice(map, order.shift(), actx.currentTime);   // steal oldest in THIS pool only
+    map[n] = player.queueWaveTable(actx, actx.destination, preset, actx.currentTime, n, MAX_LEN, Math.max(0.2, vel / 127));
+    order.push(n);
   }
   function stop1(map, n) {
-    if (map[n]) { try { map[n].cancel(actx.currentTime); } catch (e) {} delete map[n]; }
-    order = order.filter(o => !(o.map === map && o.n === n));
+    endVoice(map, n);                  // brief release tail instead of a hard click
+    const order = poolFor(map); const i = order.indexOf(n); if (i >= 0) order.splice(i, 1);
   }
-  function synthOn(n, vel) { play1(envs, n, vel); }
+  function synthOn(n, vel) { play1(envs, n, vel, LIVE_MAX); }
   function synthOff(n) { stop1(envs, n); }
-  function synthAutoOn(n, vel) { play1(autoEnvs, n, vel); }       // accompaniment from the engine
+  function synthAutoOn(n, vel) { play1(autoEnvs, n, vel, AUTO_MAX); }   // accompaniment from the engine
   function synthAutoOff(n) { stop1(autoEnvs, n); }
-  function synthAllOff() { for (const m of [envs, autoEnvs]) for (const n in m) { try { m[n].cancel(); } catch (e) {} delete m[n]; } order = []; }
+  function synthAllOff() { for (const m of [envs, autoEnvs]) for (const n in m) { try { m[n].cancel(); } catch (e) {} delete m[n]; } liveOrder.length = 0; autoOrder.length = 0; }
 
   // Timing feedback: running tallies + an instant per-note flash (early / good / late).
   let timingTally = null, flashing = false, flashTimer = null;
@@ -522,33 +572,135 @@
     flashTimer = setTimeout(() => { flashing = false; showTiming(); }, 700);
   }
 
+  /* ---- end-of-song celebration (reward loop) ---- */
+  let endedShown = false;
+  function bestKey(f) { return 'pitv.best.' + f; }
+  function celebrate() {
+    const t = timingTally || {};
+    const tot = (t.good || 0) + (t.late || 0) + (t.early || 0) + (t.miss || 0);
+    const ratio = tot ? (t.good || 0) / tot : 1;          // Listen / no gates -> full marks
+    const stars = tot === 0 ? 3 : ratio >= 0.85 ? 3 : ratio >= 0.55 ? 2 : 1;
+    finStars.textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
+    finSub.textContent = tot
+      ? (t.good + ' good · ' + t.late + ' late · ' + t.early + ' early' + (t.miss ? ' · ' + t.miss + ' missed' : ''))
+      : 'Nice listening!';
+    if (loadedFile) {
+      const prev = +(localStorage.getItem(bestKey(loadedFile)) || 0);
+      if (stars > prev) localStorage.setItem(bestKey(loadedFile), stars);
+    }
+    finish.hidden = false;
+    if (kbd) setTimeout(() => focusAt(finAgain), 0);
+  }
+  finAgain.onclick = async () => { finish.hidden = true; endedShown = false; try { await control({ cmd: 'reset' }); } catch (e) {} playBtn.click(); };
+  finPick.onclick = () => { finish.hidden = true; endedShown = false; menu.hidden = false; showScreen('songs'); };
+
+  /* ---- D-pad / keyboard navigation (TV remote: arrows + Enter + Back) ---- */
+  let kbd = false;                                        // true once the user drives by keys -> show focus ring
+  function vis(el) { return el && el.offsetParent !== null && !el.disabled; }
+  function navCols() {
+    if (!finish.hidden) return [[finAgain, finPick].filter(vis)];
+    if (menu.hidden) return [[playBtn, resetBtn, viewBtn, menuBtn, seekEl].filter(vis)];
+    const sc = $(SCREENS[screen]);
+    if (screen === 'songs') {                             // two columns: category tabs | song list (+ upload)
+      const tabs = Array.from(groupTabs.querySelectorAll('.gtab')).filter(vis);
+      const items = Array.from(songList.querySelectorAll('.songitem')).filter(vis).concat([uploadBtn].filter(vis));
+      return [tabs, items];
+    }
+    return [Array.from(sc.querySelectorAll('button, select, summary, .songitem')).filter(vis)];
+  }
+  function focusAt(el) {
+    if (!el) return;
+    document.querySelectorAll('.nav-here').forEach(e => e.classList.remove('nav-here'));
+    try { el.focus({ preventScroll: false }); } catch (e) { el.focus(); }
+    if (kbd) el.classList.add('nav-here');
+  }
+  function focusFirst() { const c = navCols(); if (c.length && c[0].length) focusAt(c[0][0]); }
+  function navMove(dRow, dCol) {
+    const cols = navCols(); if (!cols.length) return;
+    const cur = document.activeElement;
+    let ci = cols.findIndex(c => c.indexOf(cur) >= 0);
+    if (ci < 0) { focusFirst(); return; }
+    let ri = cols[ci].indexOf(cur);
+    if (dCol) { ci = Math.max(0, Math.min(cols.length - 1, ci + dCol)); ri = Math.min(Math.max(ri, 0), cols[ci].length - 1); }
+    if (dRow) { ri = Math.max(0, Math.min(cols[ci].length - 1, ri + dRow)); }
+    focusAt(cols[ci][ri]);
+  }
+  function seekBy(dir) {
+    if (!currentVM) return;
+    const step = Math.max(1, currentVM.duration * 0.02);
+    control({ cmd: 'seek', t: Math.max(0, Math.min(currentVM.duration, lastT + dir * step)) }).catch(() => {});
+  }
+  document.addEventListener('pointerdown', () => { kbd = false; document.querySelectorAll('.nav-here').forEach(e => e.classList.remove('nav-here')); });
+  document.addEventListener('keydown', e => {
+    const k = e.key, ae = document.activeElement, tag = (ae && ae.tagName) || '';
+    if (k === 'ArrowLeft' || k === 'ArrowRight') {
+      if (tag === 'SELECT') {                             // remote: left/right adjust the focused setting
+        const d = k === 'ArrowRight' ? 1 : -1, ni = ae.selectedIndex + d;
+        if (ni >= 0 && ni < ae.options.length) { ae.selectedIndex = ni; ae.dispatchEvent(new Event('change')); }
+        e.preventDefault(); return;
+      }
+      if (ae === seekEl) { seekBy(k === 'ArrowRight' ? 1 : -1); e.preventDefault(); return; }
+    }
+    switch (k) {
+      case 'ArrowUp': kbd = true; navMove(-1, 0); e.preventDefault(); break;
+      case 'ArrowDown': kbd = true; navMove(1, 0); e.preventDefault(); break;
+      case 'ArrowLeft': kbd = true; navMove(0, -1); e.preventDefault(); break;
+      case 'ArrowRight': kbd = true; navMove(0, 1); e.preventDefault(); break;
+      case 'Enter':
+        if (ae && tag !== 'SELECT' && ae.click) { ae.click(); e.preventDefault(); }
+        break;
+      case 'Backspace': case 'Escape':
+        kbd = true;
+        if (!finish.hidden) { /* leave celebration via its buttons */ }
+        else if (!menu.hidden) { if (screen === 'home') { if (loadedFile) closeMenu(); } else menuBack.onclick(); }
+        else openMenu();
+        e.preventDefault(); break;
+      case ' ': case 'Spacebar':
+        if (menu.hidden && finish.hidden) { playBtn.click(); e.preventDefault(); }
+        break;
+    }
+  });
+
   /* ---- SSE: live keyboard notes + streamed play-position ---- */
   (function connect() {
     const es = new EventSource('/events');
     es.onopen = () => { statusEl.className = 'dot ok'; statusEl.title = 'connected'; };
     es.onerror = () => { statusEl.className = 'dot err'; statusEl.title = 'reconnecting…'; };
+    let lastPct = -1, lastTallyKey = '';
     es.onmessage = ev => {
       const m = JSON.parse(ev.data);
       if (m.type === 'pos' || m.type === 'hello') {
-        if (m.type === 'hello' && m.vm && !currentVM) {   // resync a fresh/reconnected client
-          currentVM = m.vm; loadedFile = m.file || null; selFile = m.file || null;
-          PiTV.setSong(m.vm); buildPartOptions(m.vm); showTranspose(m.vm.transpose || 0);
-          songLabel.textContent = '♪ ' + m.vm.title + ' · ' + m.vm.notes.length + ' notes';
+        // Adopt the engine's authoritative state on (re)connect, or when another client switched songs.
+        const newSong = m.vm && (!currentVM || m.file !== loadedFile);
+        if (m.type === 'hello' && newSong) {
+          adoptHello(m);
           setPlayBtn(!!m.playing);
           if (m.playing) closeMenu();        // resynced to a playing song -> show the stage
-          else if (!menu.hidden) showScreen('setup');   // loaded but idle -> drop into its setup
+          else if (!menu.hidden && screen === 'home') showScreen('setup');   // idle -> its setup (don't interrupt nav)
+        } else if (m.type === 'pos' && m.file && loadedFile && m.file !== loadedFile) {
+          es.close(); setTimeout(connect, 60); return;    // stale view: reconnect for a clean hello snapshot
         }
+        lastT = m.t;
         PiTV.setPos(m.t, m.waiting, m.wanted);
+        // visual count-in: 3-2-1 during the pre-roll (negative play time)
+        if (playing && m.t < 0) { const n = Math.min(3, Math.ceil(-m.t)); countin.firstChild.textContent = n > 0 ? n : ''; countin.hidden = n <= 0; }
+        else if (!countin.hidden) countin.hidden = true;
         const d = currentVM ? currentVM.duration : 0;
-        seekFill.style.width = (d > 0 ? Math.max(0, Math.min(1, m.t / d)) * 100 : 0) + '%';
-        timingTally = m.timing; if (!flashing) showTiming();
-        if (m.ended) setPlayBtn(false);     // song finished on its own (one-shot, never flips back)
+        const pct = d > 0 ? Math.max(0, Math.min(100, m.t / d * 100)) : 0;
+        if (Math.abs(pct - lastPct) >= 0.2) { seekFill.style.width = pct + '%'; seekEl.setAttribute('aria-valuenow', Math.round(pct)); lastPct = pct; }
+        timingTally = m.timing;
+        const tk = m.timing ? (m.timing.good + ',' + m.timing.late + ',' + m.timing.early + ',' + m.timing.miss + ',' + m.timing.on) : '';
+        if (!flashing && tk !== lastTallyKey) { showTiming(); lastTallyKey = tk; }   // only repaint when it changes
+        if (m.ended) {                       // song finished on its own (one-shot, never flips back)
+          setPlayBtn(false); countin.hidden = true;
+          if (!endedShown) { endedShown = true; celebrate(); }
+        }
       } else if (m.type === 'rating') {
         flashRating(m.kind, m.off);         // instant early/good/late feedback per chord
       } else if (m.type === 'noteon') {
-        PiTV.highlight(m.note, true); synthOn(m.note, m.velocity);
+        PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true); synthOn(m.note, m.velocity);
       } else if (m.type === 'noteoff') {
-        PiTV.highlight(m.note, false); synthOff(m.note);
+        PiTV.highlight(m.note, false); PiTV.setPlayed(m.note, false); synthOff(m.note);
       } else if (m.type === 'autoon') {
         if (m.ch !== 9) synthAutoOn(m.note, m.velocity);   // skip drums (would play as piano)
       } else if (m.type === 'autooff') {

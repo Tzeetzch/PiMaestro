@@ -53,6 +53,7 @@ const PiTV = (function () {
   let playHand = null;                       // 'R'/'L' to emphasise one hand of a 1-channel part
   let showNames = true;                      // draw the note-name chips in notation
   const wantedSet = {};
+  const playedSet = new Set();               // MIDI notes the player is pressing right now (shown on the staff)
   // R.2: the notation staff + header (clefs/time-sig/key-sig) never change while scrolling,
   // so render them once to an offscreen canvas and blit it each frame.
   let staticCv = null, staticDirty = true;
@@ -137,6 +138,8 @@ const PiTV = (function () {
   // hand ('R'/'L') optionally narrows to one hand of a single-channel part (the other dims).
   function setPlay(channels, hand) { playSet = channels ? new Set(channels) : null; playHand = (hand === 'R' || hand === 'L') ? hand : null; dirty = true; }
   function setPos(t, isWaiting, want) { now = t; waiting = !!isWaiting; setWanted(want || []); dirty = true; }
+  // Live keys the player presses -> drawn on the staff at the play line (PianoBooster behaviour).
+  function setPlayed(n, on) { if (on) playedSet.add(n); else playedSet.delete(n); dirty = true; }
   function setLoop(a, b) { loopA = (a == null ? null : a); loopB = (b == null ? null : b); dirty = true; }
   function setNames(on) { showNames = !!on; dirty = true; }
   function setWanted(list) {
@@ -266,7 +269,20 @@ const PiTV = (function () {
   const C_STAVE = '#515b68', C_NOTE = '#e8edf2', C_WANT = '#f5b21f', C_DIM = '#6f7b8a',
         C_BEAT = '#1f2630', C_BARMK = '#323c48', C_BAR = '#79838f',
         C_NAME = '#9aa4b0', C_NOW = '#3b82f0', C_ZONE = 'rgba(59,130,240,0.10)',
-        C_BARNUM = '#8b97a6', C_LOOP = 'rgba(150,120,230,0.16)', C_LOOPEDGE = 'rgba(168,140,245,0.85)';
+        C_BARNUM = '#8b97a6', C_LOOP = 'rgba(150,120,230,0.16)', C_LOOPEDGE = 'rgba(168,140,245,0.85)',
+        C_PLAYED = '#3fe08a';                // the keys the player is pressing (live), shown on the staff
+
+  // Map an arbitrary MIDI pitch to a grand-staff position (stave-index from the staff centre,
+  // + a sharp for black keys), so we can draw live-played keys without the engine's per-note layout.
+  // Matches notationGeom's geometry: middle C is idx -6 (treble) / +6 (bass).
+  const DEG = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6];   // pitch-class -> diatonic degree (C=0..B=6)
+  const ACC = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0];   // black keys drawn as sharps
+  function staffPos(n, split) {
+    const pc = ((n % 12) + 12) % 12, oct = Math.floor(n / 12);
+    const D = 7 * oct + DEG[pc];                       // absolute diatonic step number
+    const staff = n >= (split || 60) ? 'treble' : 'bass';
+    return { staff, idx: staff === 'treble' ? D - 41 : D - 29, acc: ACC[pc] };   // B4=41, D3=29 are the centres
+  }
   // Map a real-time position (sec) to a fractional musical-beat index using the engine's
   // tempo-mapped beat grid. This makes horizontal spacing musical (constant width per note
   // value, tempo-independent) like PianoBooster, while the playhead still tracks real time.
@@ -428,11 +444,25 @@ const PiTV = (function () {
           ctx.font = '600 ' + fh.toFixed(0) + 'px system-ui';
           ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
           const lx = x - 9 * s, ly = y - 2 * step - 2;
-          const tw = ctx.measureText(nt.nm).width, pad = 3 * s;
+          if (nt._nmW == null || nt._nmFh !== fh) { nt._nmW = ctx.measureText(nt.nm).width; nt._nmFh = fh; }  // measure once, not per frame
+          const tw = nt._nmW, pad = 3 * s;
           ctx.fillStyle = 'rgba(13,17,23,0.85)';
           rr(lx - tw / 2 - pad, ly - fh / 2 - 1, tw + 2 * pad, fh + 2, 3 * s); ctx.fill();
           ctx.fillStyle = C_NAME;
           ctx.fillText(nt.nm, lx, ly);
+        }
+      }
+      // live keys the player is pressing, drawn on the staff at the play line (PianoBooster behaviour)
+      if (playedSet.size) {
+        const split = (song && song.split) || 60, lw = 12 * s;
+        for (const n of playedSet) {
+          const sp = staffPos(+n, split);
+          const c = sp.staff === 'treble' ? trebleC : bassC, y = yOf(sp.staff, sp.idx);
+          ctx.strokeStyle = C_PLAYED; ctx.lineWidth = Math.max(1, s);
+          if (sp.idx >= 6) for (let k = 6; k <= sp.idx; k += 2) { const yy = c - k * step; ctx.beginPath(); ctx.moveTo(playX - lw, yy); ctx.lineTo(playX + lw, yy); ctx.stroke(); }
+          if (sp.idx <= -6) for (let k = -6; k >= sp.idx; k -= 2) { const yy = c - k * step; ctx.beginPath(); ctx.moveTo(playX - lw, yy); ctx.lineTo(playX + lw, yy); ctx.stroke(); }
+          if (sp.acc) accidental(sp.acc, playX - 16 * s, y, s, C_PLAYED);
+          ctx.fillStyle = C_PLAYED; fillGlyph(NOTEHEAD_PATH, playX, y, s);
         }
       }
       ctx.restore();
@@ -448,5 +478,5 @@ const PiTV = (function () {
   }
   function frame() { requestAnimationFrame(frame); if (ctx && dirty) { draw(); dirty = false; } }
 
-  return { buildKeyboard, highlight, attachCanvas, setSong, setPos, setView, setPlay, setRange, setLoop, setNames };
+  return { buildKeyboard, highlight, attachCanvas, setSong, setPos, setPlayed, setView, setPlay, setRange, setLoop, setNames };
 })();

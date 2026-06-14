@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PiTV — Play</title>
 <style>
   :root { color-scheme: dark; --bar:#11161d; --line:#20262e; --ctl:#1c2128; --ctl2:#222b35;
@@ -122,6 +122,38 @@
     padding:9px 16px; cursor:pointer; font-weight:600; font-size:15px; }
   .pbtn.on { background:var(--accent); border-color:var(--accent); color:#fff; }
   #fav.on { color:#f5b21f; border-color:#f5b21f; }
+  .stars-mini { color:#f5b21f; margin-left:8px; }
+
+  /* keyboard / remote focus ring (D-pad navigation) */
+  #menu :focus-visible, #seek:focus-visible, #transport :focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  .gtab:focus-visible, .songitem:focus-visible { outline:3px solid var(--accent); outline-offset:-2px; background:var(--ctl2); }
+  .nav-here { outline:3px solid var(--accent) !important; outline-offset:2px; }   /* programmatic focus fallback */
+  #seek:focus { outline:3px solid var(--accent); outline-offset:2px; }
+  #seek[tabindex] { cursor:pointer; }
+
+  /* Advanced disclosure inside Setup */
+  details.adv { margin-top:6px; }
+  details.adv > summary { cursor:pointer; color:var(--dim); font-size:13px; letter-spacing:.08em;
+    text-transform:uppercase; padding:10px 0; list-style:none; outline-offset:2px; }
+  details.adv > summary::-webkit-details-marker { display:none; }
+  details.adv > summary::before { content:'\25B8\00A0'; }
+  details.adv[open] > summary::before { content:'\25BE\00A0'; }
+  #modeHint { margin-top:6px; }
+
+  /* count-in 3-2-1 over the stage */
+  #countin[hidden] { display:none; }
+  #countin { position:fixed; inset:0; z-index:6; display:grid; place-items:center; pointer-events:none; }
+  #countin span { font-size:22vh; font-weight:800; color:#fff; text-shadow:0 0 30px rgba(31,111,235,.85); }
+
+  /* end-of-song celebration */
+  #finish[hidden] { display:none; }
+  #finish { position:fixed; inset:0; z-index:20; background:rgba(9,12,17,.93);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:24px; }
+  #finish .fin-title { font-size:clamp(28px,6vh,48px); font-weight:800; }
+  #finish .stars { font-size:clamp(48px,12vh,96px); letter-spacing:12px; min-height:1em; }
+  #finish .fin-sub { color:var(--dim); font-size:18px; }
+  #finish .fin-btns { display:flex; gap:14px; margin-top:12px; flex-wrap:wrap; justify-content:center; }
+  #finish .bigbtn { font-size:20px; padding:16px 30px; width:auto; }
 </style>
 </head>
 <body>
@@ -134,7 +166,7 @@
     <span id="status" class="dot" title="connecting"></span>
   </header>
 
-  <div id="seek" title="Click to jump to a spot"><div id="seekfill"></div></div>
+  <div id="seek" tabindex="0" role="slider" aria-label="Seek through the song" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" title="Click or use arrow keys to jump to a spot"><div id="seekfill"></div></div>
   <canvas id="fall"></canvas>
 
   <div id="transport">
@@ -160,7 +192,6 @@
       <div class="home-btns">
         <button id="homeStart" class="bigbtn">&#9654; Start</button>
         <button id="homeSettings" class="bigbtn">&#9881; Settings</button>
-        <button id="homeQuit" class="bigbtn quit">&#9209; Quit</button>
       </div>
     </section>
 
@@ -190,7 +221,7 @@
           <button id="fav" class="btn iconbtn" title="Favorite this song">&#9734;</button>
         </div>
         <div class="sect">
-          <h3>Tracks</h3>
+          <h3>How it plays</h3>
           <div class="field"><span>Which part you play</span>
             <select id="handSel">
               <option value="both">Both hands</option>
@@ -198,19 +229,6 @@
               <option value="L">Left hand</option>
             </select>
           </div>
-          <div class="field"><span>Hand split (one-track songs)</span>
-            <select id="splitSel" title="Pitch where left & right hands divide (and the treble/bass clef boundary)">
-              <option value="53">F3</option><option value="55">G3</option>
-              <option value="57">A3</option><option value="59">B3</option>
-              <option value="60" selected>C4 — middle C</option>
-              <option value="62">D4</option><option value="64">E4</option>
-              <option value="65">F4</option><option value="67">G4</option>
-            </select>
-          </div>
-          <div id="instrPanel"></div>
-        </div>
-        <div class="sect">
-          <h3>How it plays</h3>
           <div class="field"><span>Mode</span>
             <select id="modeSel">
               <option value="follow">Follow you (waits for you)</option>
@@ -218,6 +236,7 @@
               <option value="listen">Listen (plays itself)</option>
             </select>
           </div>
+          <div id="modeHint" class="hint"></div>
           <div class="field"><span>Speed</span>
             <select id="speedSel">
               <option value="0.5">50%</option><option value="0.6">60%</option>
@@ -227,18 +246,33 @@
               <option value="1.5">150%</option><option value="2">200%</option>
             </select>
           </div>
-          <div class="field"><span>Octave shift</span>
-            <select id="transSel">
-              <option value="auto" selected>Auto (fit keyboard)</option>
-              <option value="24">+2 octaves</option><option value="12">+1 octave</option>
-              <option value="0">No shift (original pitch)</option>
-              <option value="-12">-1 octave</option><option value="-24">-2 octaves</option>
-            </select>
-          </div>
         </div>
         <div class="sect">
           <h3>Loop a passage</h3>
           <div id="loopPanel"></div>
+        </div>
+        <div class="sect">
+          <details class="adv">
+            <summary>Advanced</summary>
+            <div class="field"><span>Too high / too low? (octave)</span>
+              <select id="transSel">
+                <option value="auto" selected>Auto (fit keyboard)</option>
+                <option value="24">+2 octaves</option><option value="12">+1 octave</option>
+                <option value="0">No shift (original pitch)</option>
+                <option value="-12">-1 octave</option><option value="-24">-2 octaves</option>
+              </select>
+            </div>
+            <div class="field" id="splitField"><span>Hand split (one-track songs)</span>
+              <select id="splitSel" title="Pitch where left & right hands divide (and the treble/bass clef boundary)">
+                <option value="53">F3</option><option value="55">G3</option>
+                <option value="57">A3</option><option value="59">B3</option>
+                <option value="60" selected>C4 — middle C</option>
+                <option value="62">D4</option><option value="64">E4</option>
+                <option value="65">F4</option><option value="67">G4</option>
+              </select>
+            </div>
+            <div id="instrPanel"></div>
+          </details>
         </div>
       </div>
       <div class="menu-foot">
@@ -265,6 +299,18 @@
       </div>
     </section>
   </aside>
+
+  <div id="countin" hidden><span></span></div>
+
+  <div id="finish" hidden>
+    <div class="fin-title">&#127881; You played it!</div>
+    <div id="finStars" class="stars"></div>
+    <div id="finSub" class="fin-sub"></div>
+    <div class="fin-btns">
+      <button id="finAgain" class="bigbtn" style="background:#2ea043;border-color:#2ea043;color:#fff">&#9654; Play again</button>
+      <button id="finPick" class="bigbtn">&#9776; Pick another</button>
+    </div>
+  </div>
 
   <script src="vendor/wafplayer.js"></script>
   <script src="vendor/piano.js"></script>
