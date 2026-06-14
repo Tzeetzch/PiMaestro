@@ -633,6 +633,7 @@
   document.addEventListener('pointerdown', () => { kbd = false; document.querySelectorAll('.nav-here').forEach(e => e.classList.remove('nav-here')); });
   document.addEventListener('keydown', e => {
     const k = e.key, ae = document.activeElement, tag = (ae && ae.tagName) || '';
+    if (tag === 'INPUT') return;                          // let text/number inputs (loop bars) use keys natively
     if (k === 'ArrowLeft' || k === 'ArrowRight') {
       if (tag === 'SELECT') {                             // remote: left/right adjust the focused setting
         const d = k === 'ArrowRight' ? 1 : -1, ni = ae.selectedIndex + d;
