@@ -13,7 +13,14 @@ param(
   [switch]$NoRestart
 )
 $ErrorActionPreference = "Stop"
-$Pi   = "peter@192.168.3.110"
+# Pi target as user@host — set $env:PITV_HOST, or put it in a git-ignored ".pitv-host" file.
+$Pi = $env:PITV_HOST
+if (-not $Pi) {
+  $cfg = Join-Path $PSScriptRoot ".pitv-host"
+  if (Test-Path $cfg) { $Pi = (Get-Content $cfg -Raw).Trim() }
+}
+if (-not $Pi) { throw "Set the Pi target: `$env:PITV_HOST = 'user@host'  (or create a .pitv-host file)" }
+$Host_ = ($Pi -split '@')[-1]
 $Dst  = "~/webpiano"
 $Port = 8080
 $Root = Join-Path $PSScriptRoot "webpiano"
@@ -46,7 +53,7 @@ if (-not $NoRestart) {
   Write-Host "==> Smoke test" -ForegroundColor Cyan
   $code = ssh $Pi "curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:$Port/"
   if ($code -eq "200") {
-    Write-Host "OK  http://192.168.3.110:$Port/  (HTTP $code)" -ForegroundColor Green
+    Write-Host "OK  http://${Host_}:$Port/  (HTTP $code)" -ForegroundColor Green
   } else {
     Write-Host "FAIL  HTTP $code - last server log:" -ForegroundColor Red
     ssh $Pi "tail -n 20 $Dst/server.log"

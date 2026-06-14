@@ -17,6 +17,9 @@ Thumbs.db
 .claude/settings.local.json
 .claude/projects/
 
+# Personal Pi target for deploy.ps1 / setup-pi-key.ps1 (user@host) — never commit
+.pitv-host
+
 # Stray screenshots from debugging
 /ui*.png
 /kl.png
