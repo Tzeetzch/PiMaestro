@@ -12,6 +12,7 @@ renders `t` and highlights `wanted`. Timing + input-matching live here, in one p
 """
 from __future__ import annotations
 
+import queue
 import socket
 import threading
 import time
@@ -33,20 +34,31 @@ class _Synth:
     def __init__(self, host="127.0.0.1", port=9800):
         self._addr = (host, port)
         self._sock = None
-        self._lock = threading.Lock()
+        # commands go on a queue; a background thread does the BLOCKING socket I/O, so callers
+        # (the conductor, while holding its lock) never block on the network — keeping live
+        # MIDI matching responsive even if FluidSynth stalls. FIFO + single worker keeps order.
+        self._q = queue.Queue(maxsize=4096)
+        threading.Thread(target=self._worker, daemon=True).start()
 
     def _send(self, cmd):
-        with self._lock:
+        try:
+            self._q.put_nowait(cmd)
+        except queue.Full:
+            pass                       # synth backed up (FluidSynth down?) — drop, never block
+
+    def _worker(self):
+        while True:
+            cmd = self._q.get()
             if self._sock is None:
                 try:
                     self._sock = socket.create_connection(self._addr, timeout=1)
                 except OSError:
                     self._sock = None
-                    return
+                    continue           # FluidSynth unreachable; drop this cmd, try the next
             try:
                 self._sock.sendall((cmd + "\n").encode())
             except OSError:
-                self._sock = None      # dropped; reconnect on the next send
+                self._sock = None      # dropped; reconnect on the next command
 
     def noteon(self, ch, key, vel):
         self._send(f"noteon {ch} {key} {vel}")
