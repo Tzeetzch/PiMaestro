@@ -221,7 +221,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif cmd == "reset":
             conductor.rewind(); self._json({"ok": True})
         elif cmd == "play_parts":
-            conductor.set_play(req.get("channels")); self._json({"ok": True})
+            conductor.set_play(req.get("channels"), req.get("hand")); self._json({"ok": True})
         elif cmd == "mode":
             conductor.set_mode(req.get("mode", "follow")); self._json({"ok": True})
         elif cmd == "speed":

@@ -99,6 +99,7 @@ class Conductor:
         self._notes = []
         self._duration = 0.0
         self._play = set()               # MIDI channels the player covers (their part)
+        self._hand = None                # 'R'/'L' to split a single channel by pitch, else None
         self._mode = "follow"            # follow (waits) / along (continuous) / listen (plays all)
         self._lo, self._hi = 21, 108     # player's keyboard range; notes outside auto-play
 
@@ -145,10 +146,12 @@ class Conductor:
             self._rebuild_auto()
         self._emit()
 
-    def set_play(self, channels):
-        """Choose which part(s) the player covers — a set of MIDI channels."""
+    def set_play(self, channels, hand=None):
+        """Choose which part(s) the player covers — a set of MIDI channels, optionally
+        narrowed to one hand ('R'/'L') by pitch, for single-channel (one-track) songs."""
         with self._lock:
             self._play = set(int(c) for c in (channels or []))
+            self._hand = hand if hand in ("R", "L") else None
             self._rebuild_gates()
             self._seek_to(self._t)       # keep position, recompute current gate
             self._rebuild_auto()         # the rest becomes backing
@@ -283,7 +286,7 @@ class Conductor:
             ch = int(n.get("ch", 0))
             if ch == 9 or not (self._lo <= n["n"] <= self._hi):   # drums / off your keyboard
                 continue
-            if ch in self._play:                         # only the part(s) you chose to play
+            if ch in self._play and (self._hand is None or n.get("hand") == self._hand):
                 groups.setdefault(round(n["t"], 3), set()).add(n["n"])
         self._gates = [(t, frozenset(ps)) for t, ps in sorted(groups.items()) if ps]
 
@@ -354,7 +357,8 @@ class Conductor:
             if ch in self._muted:
                 continue                                   # muted in the Instruments panel
             reachable = ch != 9 and self._lo <= n["n"] <= self._hi   # on your keyboard?
-            mine = reachable and self._mode != "listen" and ch in self._play
+            mine = (reachable and self._mode != "listen" and ch in self._play
+                    and (self._hand is None or n.get("hand") == self._hand))
             if mine:
                 continue                                   # you provide it; the rest auto-plays
             auto.append((n["t"], n["t"] + n["d"], ch, n["n"], n.get("v") or AUTO_VEL))

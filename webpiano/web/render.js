@@ -50,6 +50,7 @@ const PiTV = (function () {
   let canvas, ctx, song = null, view = 'notation';
   let now = -LOOKAHEAD, waiting = false, wanted = [], dirty = true, playSet = null;
   let loopA = null, loopB = null;            // loop region (seconds), or null
+  let playHand = null;                       // 'R'/'L' to emphasise one hand of a 1-channel part
   let showNames = true;                      // draw the note-name chips in notation
   const wantedSet = {};
   // R.2: the notation staff + header (clefs/time-sig/key-sig) never change while scrolling,
@@ -99,8 +100,9 @@ const PiTV = (function () {
   }
   const keyT = nt => nt.t, keyB = nt => nt._b;
   function setView(v) { view = v; dirty = true; staticDirty = true; }
-  // channels the player covers (Set) -> the rest is dimmed; null = dim nothing (Listen)
-  function setPlay(channels) { playSet = channels ? new Set(channels) : null; dirty = true; }
+  // channels the player covers (Set) -> the rest is hidden; null = show all (Listen).
+  // hand ('R'/'L') optionally narrows to one hand of a single-channel part (the other dims).
+  function setPlay(channels, hand) { playSet = channels ? new Set(channels) : null; playHand = (hand === 'R' || hand === 'L') ? hand : null; dirty = true; }
   function setPos(t, isWaiting, want) { now = t; waiting = !!isWaiting; setWanted(want || []); dirty = true; }
   function setLoop(a, b) { loopA = (a == null ? null : a); loopB = (b == null ? null : b); dirty = true; }
   function setNames(on) { showNames = !!on; dirty = true; }
@@ -159,8 +161,8 @@ const PiTV = (function () {
       const L = layout[nt.n]; if (!L) continue;
       const x = L.x * W + 1, w = Math.max(L.w * W - 2, 3);
       const atLine = Math.abs(nt.t - now) < 0.06;
-      const reach = nt.n >= rangeLo && nt.n <= rangeHi;     // off your keyboard -> auto-played
-      const base = (atLine && wantedSet[nt.n]) ? '#f5b21f' : !reach ? '#6f7b8a' : nt.hand === 'L' ? '#56a3ff' : '#58d977';
+      const mine = (nt.n >= rangeLo && nt.n <= rangeHi) && (!playHand || nt.hand === playHand);
+      const base = (atLine && wantedSet[nt.n]) ? '#f5b21f' : !mine ? '#6f7b8a' : nt.hand === 'L' ? '#56a3ff' : '#58d977';
       const headY = Math.min(yb, lineY);                 // leading edge, clamped to the line
       const active = yb > lineY + 0.5 && yt < lineY;      // straddling the line -> HOLD now
       // remaining-to-hold body (above the line) — shrinks as you hold
@@ -368,8 +370,8 @@ const PiTV = (function () {
         if (playSet && !playSet.has(nt.ch)) continue;   // hide parts you don't play (background)
         const x = bx(nb); if (x < scrollX - step || x > endX) continue;
         const y = yOf(nt.staff, nt.idx);
-        const reach = nt.n >= rangeLo && nt.n <= rangeHi;   // off your keyboard -> auto-played
-        const col = (Math.abs(nt.t - now) < 0.06 && wantedSet[nt.n]) ? C_WANT : (reach ? C_NOTE : C_DIM);
+        const mine = (nt.n >= rangeLo && nt.n <= rangeHi) && (!playHand || nt.hand === playHand);
+        const col = (Math.abs(nt.t - now) < 0.06 && wantedSet[nt.n]) ? C_WANT : (mine ? C_NOTE : C_DIM);
         const t = nt.sym, solid = t === '16' || t === '8' || t === 'q', flags = t === '16' ? 2 : t === '8' ? 1 : 0;
         const c = nt.staff === 'treble' ? trebleC : bassC, lw = 12 * s;
         // ledger lines (PB threshold |idx| >= 6)

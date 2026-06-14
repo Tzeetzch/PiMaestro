@@ -30,7 +30,7 @@
   PiTV.buildKeyboard($('piano'));
   PiTV.attachCanvas($('fall'));
 
-  let loadedFile = null, mode = 'follow', playing = false, currentVM = null, currentPlay = [];
+  let loadedFile = null, mode = 'follow', playing = false, currentVM = null, currentPlay = [], currentHand = null;
   let transpose = 'auto';                       // octave shift to fit the keyboard ('auto' or semitones)
   let restoring = false;                        // suppress auto-save while applying saved settings
   function kbdRange() { return KBD_RANGES[kbdSel.value] || KBD_RANGES[88]; }
@@ -75,7 +75,7 @@
     saveCurrent();
   };
 
-  // ---- which part(s) the player covers: the Part dropdown maps to MIDI channels ----
+  // ---- which part(s) the player covers: Part dropdown -> MIDI channels (+ hand for 1-track) ----
   function partChannels() {
     const vm = currentVM; if (!vm) return [];
     const v = handSel.value;
@@ -84,26 +84,35 @@
     if (v && v.indexOf('ch:') === 0) return [parseInt(v.slice(3), 10)];
     return [...new Set([vm.rightChan, vm.leftChan].filter(c => c != null))];   // 'both'
   }
+  // When both hands live on ONE channel, R/L can't be a channel — split by pitch instead.
+  function partHand() {
+    const vm = currentVM; if (!vm) return null;
+    if (vm.rightChan != null && vm.rightChan === vm.leftChan) {
+      if (handSel.value === 'R') return 'R';
+      if (handSel.value === 'L') return 'L';
+    }
+    return null;
+  }
   function buildPartOptions(vm) {
     handSel.innerHTML = '';
     const add = (val, label) => { const o = document.createElement('option'); o.value = val; o.textContent = label; handSel.appendChild(o); };
     const r = vm.rightChan, l = vm.leftChan;
-    if (r != null && l != null && r !== l) { add('both', 'Both hands'); add('R', 'Right hand'); add('L', 'Left hand'); }
-    else { add('both', 'Play melody'); }
-    (vm.parts || []).forEach(p => {                       // any other part you could play
-      if (p.ch === 9 || p.ch === r || p.ch === l) return; // drums / hands already covered
+    add('both', 'Both hands');
+    if (r != null || l != null) { add('R', 'Right hand'); add('L', 'Left hand'); }   // always pickable now
+    (vm.parts || []).forEach(p => {                       // any other instrument you could play
+      if (p.ch === 9 || p.ch === r || p.ch === l) return; // drums / piano part already covered
       add('ch:' + p.ch, 'Play: ' + (GM_NAMES[p.program] || ('Part ' + p.ch)));
     });
     handSel.value = 'both';
   }
-  // Set which channels the player covers; the rest become background (hidden + auto-played).
-  function setPlayChannels(ch) {
-    currentPlay = ch.slice();
-    PiTV.setPlay(mode === 'listen' ? null : ch);          // hide the parts that aren't yours
-    control({ cmd: 'play_parts', channels: ch }).catch(() => {});
+  // Set which part the player covers (channels + optional hand); the rest becomes background.
+  function setPlayChannels(ch, hand) {
+    currentPlay = ch.slice(); currentHand = hand || null;
+    PiTV.setPlay(mode === 'listen' ? null : ch, currentHand);
+    control({ cmd: 'play_parts', channels: ch, hand: currentHand }).catch(() => {});
   }
   function applyParts() {
-    setPlayChannels(partChannels());
+    setPlayChannels(partChannels(), partHand());
     if (!menu.hidden) buildInstr();                       // keep the menu's Play boxes in sync
     saveCurrent();
   }
@@ -222,7 +231,7 @@
       loadedFile = file;
       currentVM = vm;
       PiTV.setSong(vm);
-      if (keep) { setPlayChannels(currentPlay); }
+      if (keep) { setPlayChannels(currentPlay, currentHand); }
       else { buildPartOptions(vm); applyParts(); }
       showTranspose(vm.transpose || 0);
       clearLoop();                               // bar counts differ between songs
@@ -250,7 +259,7 @@
     mode = modeSel.value;
     await loadSong(file);                               // builds vm with that transpose/range
     if (has && s.hand) handSel.value = s.hand;          // best-effort dropdown label
-    if (has && s.play) setPlayChannels(s.play);         // authoritative part selection
+    if (has && s.play) setPlayChannels(s.play, partHand());   // authoritative part selection
     PiTV.setPlay(mode === 'listen' ? null : currentPlay);
     control({ cmd: 'speed', mult: +speedSel.value }).catch(() => {});   // sync engine
     control({ cmd: 'mode', mode: mode }).catch(() => {});
@@ -284,7 +293,7 @@
   handSel.onchange = () => applyParts();
   modeSel.onchange = async () => {
     mode = modeSel.value;
-    PiTV.setPlay(mode === 'listen' ? null : currentPlay);
+    PiTV.setPlay(mode === 'listen' ? null : currentPlay, currentHand);
     saveCurrent();
     try { await control({ cmd: 'mode', mode: mode }); } catch (e) {}
   };
@@ -299,7 +308,7 @@
       instrPanel.appendChild(e); return;
     }
     const playCbs = [];
-    const gatherPlay = () => { setPlayChannels(playCbs.filter(o => o.cb.checked).map(o => o.ch)); saveCurrent(); };
+    const gatherPlay = () => { setPlayChannels(playCbs.filter(o => o.cb.checked).map(o => o.ch), null); saveCurrent(); };
     parts.forEach(p => {
       const row = document.createElement('div'); row.className = 'row';
       const isDrum = p.ch === 9;
