@@ -17,6 +17,10 @@
         finish = $('finish'), finStars = $('finStars'), finSub = $('finSub'), finAgain = $('finAgain'), finPick = $('finPick'),
         countin = $('countin');
 
+  // Per-page connection id, so the Pi can tell whether THIS client wants browser sound
+  // (it only streams accompaniment audio events when at least one client does).
+  const CID = 'c' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+
   /* ---- multi-screen menu: home -> song picker -> per-song setup -> game; settings off home ---- */
   const SCREENS = { home: 'screenHome', songs: 'screenSongs', setup: 'screenSetup', settings: 'screenSettings' };
   const TITLES = { home: '', songs: 'Choose a song', setup: '', settings: 'Settings' };
@@ -523,6 +527,7 @@
       soundOn = !soundOn;
       soundBtn.classList.toggle('on', soundOn);
       soundBtn.innerHTML = soundOn ? '&#128266; On' : '&#128266; Off';
+      control({ cmd: 'wants_sound', cid: CID, on: soundOn }).catch(() => {});   // gate the Pi's audio stream
     } catch (e) { soundBtn.textContent = 'sound error'; }
   };
   // WebAudioFont schedules nodes per voice; too many at once make a weak browser choke. Cap and
@@ -664,8 +669,11 @@
 
   /* ---- SSE: live keyboard notes + streamed play-position ---- */
   (function connect() {
-    const es = new EventSource('/events');
-    es.onopen = () => { statusEl.className = 'dot ok'; statusEl.title = 'connected'; };
+    const es = new EventSource('/events?cid=' + CID);
+    es.onopen = () => {
+      statusEl.className = 'dot ok'; statusEl.title = 'connected';
+      if (soundOn) control({ cmd: 'wants_sound', cid: CID, on: true }).catch(() => {});   // re-assert after a reconnect
+    };
     es.onerror = () => { statusEl.className = 'dot err'; statusEl.title = 'reconnecting…'; };
     let lastPct = -1, lastTallyKey = '';
     es.onmessage = ev => {
