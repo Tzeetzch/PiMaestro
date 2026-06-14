@@ -22,7 +22,9 @@ TICK = 0.025             # ~40 Hz play-clock / state stream
 AT_LINE_EPS = 0.0010     # tolerance for "note has reached the hit line"
 EARLY_WINDOW = 0.30      # accept a note played up to this much BEFORE the line (forgiving)
 CHORD_WINDOW = 0.45      # all notes of a chord must be pressed within this of each other
-AUTO_VEL = 80            # velocity for auto-played (accompaniment) notes
+AUTO_VEL = 90            # velocity for auto-played (accompaniment) notes (lacking their own velocity)
+COUNT_IN = 4             # metronome clicks during the pre-roll, so the player knows when to start
+CLICK_CH, CLICK_NOTE, CLICK_VEL = 9, 76, 100   # GM drums: Hi Wood Block
 HOLD_EPS = 0.03          # accompaniment within this of a pending gate is held until you play it
 
 
@@ -118,7 +120,16 @@ class Conductor:
         self._sounding = []      # [(end, ch, pitch)] auto notes currently ringing
         self._muted = set()      # channels the user muted (skipped in accompaniment)
         self._played = []        # recent (song_time, pitch) you pressed — for scoring
+        self._clicks = []        # count-in click times (negative seconds) for the current run
+        self._click_i = 0
         self._reset_rating()
+
+    def _resync_after_change(self):
+        """Re-derive gates + accompaniment after a part/range/mode change, keeping position.
+        One place so the three steps can't drift out of order across the control methods."""
+        self._rebuild_gates()
+        self._seek_to(self._t)
+        self._rebuild_auto()
 
     # ---- control (called from HTTP handler thread) ----
     def load(self, vm, play=None, lo=None, hi=None, file=None):
@@ -166,17 +177,13 @@ class Conductor:
             return
         with self._lock:
             self._lo, self._hi = lo, hi
-            self._rebuild_gates()
-            self._seek_to(self._t)
-            self._rebuild_auto()
+            self._resync_after_change()
         self._emit()
 
     def set_mode(self, mode):
         with self._lock:
             self._mode = mode if mode in ("follow", "along", "listen") else "follow"
-            self._rebuild_gates()
-            self._seek_to(self._t)
-            self._rebuild_auto()         # listen plays every part; follow/along mute yours
+            self._resync_after_change()         # listen plays every part; follow/along mute yours
         self._emit()
 
     def set_speed(self, mult):
@@ -233,6 +240,13 @@ class Conductor:
             self._playing = True
             self._gen += 1
             gen = self._gen
+            # count-in clicks during the pre-roll, spaced at the song's opening beat interval
+            self._clicks, self._click_i = [], 0
+            if self._t < 0:
+                beats = (self._vm or {}).get("beats") or []
+                spb = (beats[1] - beats[0]) if len(beats) >= 2 else 0.5
+                spb = max(0.2, min(1.5, spb))
+                self._clicks = sorted(-i * spb for i in range(1, COUNT_IN + 1) if -i * spb > -LOOKAHEAD)
         threading.Thread(target=self._run, args=(gen,), daemon=True).start()
 
     def stop(self):
@@ -439,6 +453,7 @@ class Conductor:
         return {
             "type": "pos",
             "t": round(self._t, 3),
+            "file": self._file,            # lets a stale client detect another client switched songs
             "playing": self._playing,
             "waiting": waiting,
             "wanted": wanted,
@@ -462,6 +477,10 @@ class Conductor:
             frame["type"] = "hello"
             frame["vm"] = self._vm
             frame["file"] = self._file
+            frame["play"] = sorted(self._play)       # authoritative part/hand/mode/speed so a
+            frame["hand"] = self._hand               # reconnecting or 2nd client matches the engine
+            frame["mode"] = self._mode               # instead of resetting to defaults
+            frame["speed"] = self._speed
             return frame
 
     def _run(self, gen):
@@ -479,6 +498,9 @@ class Conductor:
                 ended = False
                 if not self._waiting():
                     self._t += dt * self._speed
+                    while self._click_i < len(self._clicks) and self._t >= self._clicks[self._click_i]:
+                        self._synth.noteon(CLICK_CH, CLICK_NOTE, CLICK_VEL)   # count-in tick (Pi sound only)
+                        self._click_i += 1
                     if self._loop and self._t >= self._loop[1]:   # reached loop end -> jump back
                         self._t = self._loop[0]
                         self._seek_to(self._t)
