@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>PiTV — Play</title>
+<style>
+  :root { color-scheme: dark; --bar:#11161d; --line:#20262e; --ctl:#1c2128; --ctl2:#222b35;
+          --ctlbd:#2f3742; --txt:#c9d1d9; --dim:#8b949e; --accent:#1f6feb; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; background:#0d1117; color:var(--txt); font-family:system-ui,Segoe UI,sans-serif;
+         height:100vh; height:100dvh; display:flex; flex-direction:column; overflow:hidden; user-select:none; }
+
+  select, .btn { font:inherit; font-size:15px; font-weight:600; color:var(--txt); background:var(--ctl);
+    border:1px solid var(--ctlbd); border-radius:9px; padding:9px 13px; cursor:pointer; }
+  select:hover, .btn:hover { background:var(--ctl2); }
+  select { max-width:60vw; }
+  .btn.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .iconbtn { width:42px; height:42px; padding:0; display:grid; place-items:center; font-size:19px; }
+  .btn:focus-visible, select:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+
+  /* ---- play screen: slim top bar ---- */
+  header { display:flex; align-items:center; gap:12px; padding:9px 16px; flex:0 0 auto;
+    background:var(--bar); border-bottom:1px solid var(--line); z-index:3; }
+  .brand { font-size:17px; font-weight:800; white-space:nowrap; }
+  #song { font-size:14px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  header .grow { margin-left:auto; }
+  .dot { width:10px; height:10px; border-radius:50%; background:#d29922; flex:0 0 auto; }
+  .dot.ok { background:#2ea043; } .dot.err { background:#cf3b3b; }
+  .badge { font-size:13px; padding:6px 11px; border-radius:9px; background:var(--ctl);
+    border:1px solid var(--ctlbd); white-space:nowrap; }
+  .badge.good { background:#1f6f33; border-color:#2ea043; color:#fff; }
+  .badge.low { background:#7a4a14; border-color:#b3791f; color:#fff; }
+  .badge.r-early { background:#16447f; border-color:var(--accent); color:#fff; }
+
+  #seek { flex:0 0 auto; height:10px; background:#161b22; cursor:pointer; position:relative; }
+  #seek:hover { background:#1c222b; }
+  #seekfill { position:absolute; left:0; top:0; bottom:0; width:0; background:var(--accent); pointer-events:none; }
+
+  #fall { flex:1 1 0; min-height:0; width:100%; display:block; }
+
+  /* ---- play screen: slim transport ---- */
+  #transport { display:flex; align-items:center; gap:10px; padding:9px 16px; flex:0 0 auto;
+    background:var(--bar); border-top:1px solid var(--line); }
+  #play { background:#2ea043; border-color:#2ea043; color:#fff; min-width:118px; font-size:16px; }
+  #play.on { background:#cf3b3b; border-color:#cf3b3b; }
+  #transport .grow { margin-left:auto; }
+
+  #piano { position:relative; flex:0 0 auto; height:clamp(110px, 20vh, 200px); }
+  .wk { position:absolute; bottom:0; top:0; background:#eee; border:1px solid #777;
+        border-radius:0 0 5px 5px; transition:background .03s; }
+  .bk { position:absolute; top:0; height:62%; background:#16191d; border:1px solid #000;
+        border-radius:0 0 4px 4px; z-index:2; transition:background .03s; }
+  .wk.oor { background:#5b626b; border-color:#454b53; }
+  .bk.oor { background:#0a0c0e; border-color:#000; }
+  .wk.midc::after { content:''; position:absolute; left:50%; bottom:9px; transform:translateX(-50%);
+    width:11px; height:11px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 2px rgba(255,255,255,.65); }
+  .wk.on { background:#58d977; } .wk.wait { background:#f0b429; }
+  .bk.on { background:#1f6feb; } .bk.wait { background:#f0b429; }
+
+  /* ---- full-screen MENU (home / setup) ---- */
+  #menu[hidden] { display:none; }
+  #menu { position:fixed; inset:0; z-index:10; background:rgba(9,12,17,.97);
+    display:flex; flex-direction:column; }
+  .menu-head { display:flex; align-items:center; gap:14px; padding:18px 28px; border-bottom:1px solid var(--line); }
+  .menu-head .brand { font-size:26px; }
+  .menu-head .grow { margin-left:auto; }
+  #menuClose { width:48px; height:48px; font-size:22px; }
+  .menu-body { overflow-y:auto; padding:10px 28px 24px; max-width:880px; width:100%; margin:0 auto; }
+  .sect { padding:18px 0; border-bottom:1px solid #1b212a; }
+  .sect h3 { margin:0 0 14px; font-size:13px; letter-spacing:.1em; text-transform:uppercase; color:#7d8794; }
+  .field { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:12px 0; font-size:16px; }
+  .field > span { color:var(--txt); }
+  .field select, .field .btn { min-width:200px; font-size:16px; padding:11px 14px; text-align:left; }
+  .menu-body select { max-width:none; }
+  .hint { font-size:13px; color:var(--dim); margin:4px 0 10px; }
+  .menu-foot { padding:16px 28px; border-top:1px solid var(--line); display:flex; gap:12px; justify-content:flex-end;
+    max-width:880px; width:100%; margin:0 auto; }
+  #startBtn { background:#2ea043; border-color:#2ea043; color:#fff; font-size:20px; font-weight:800; padding:14px 34px; }
+
+  /* rows built by app.js (loop bars, per-part instruments) */
+  .row { display:flex; align-items:center; gap:12px; font-size:15px; margin:9px 0; flex-wrap:wrap; }
+  .row .nm { min-width:96px; color:var(--txt); }
+  .row select, .row input[type=number] { background:#0d1117; border:1px solid var(--ctlbd);
+    border-radius:8px; padding:8px 10px; color:var(--txt); font-size:15px; }
+  .row input[type=number] { width:66px; }
+  .row label { display:flex; align-items:center; gap:5px; color:var(--dim); cursor:pointer; }
+  .pbtn { background:var(--ctl); color:var(--txt); border:1px solid var(--ctlbd); border-radius:8px;
+    padding:9px 16px; cursor:pointer; font-weight:600; font-size:15px; }
+  .pbtn.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  #fav.on { color:#f5b21f; border-color:#f5b21f; }
+</style>
+</head>
+<body>
+  <header>
+    <button id="menuBtn" class="btn iconbtn" title="Menu">&#9776;</button>
+    <span class="brand">&#127929; PiTV</span>
+    <span id="song"></span>
+    <span class="grow"></span>
+    <span id="score" class="badge" title="Timing: early / good / late per note you play">Timing: —</span>
+    <span id="status" class="dot" title="connecting"></span>
+  </header>
+
+  <div id="seek" title="Click to jump to a spot"><div id="seekfill"></div></div>
+  <canvas id="fall"></canvas>
+
+  <div id="transport">
+    <button id="play" class="btn">&#9654; Play</button>
+    <button id="reset" class="btn iconbtn" title="Back to start">&#8634;</button>
+    <span class="grow"></span>
+    <button id="view" class="btn">View: Notation</button>
+  </div>
+
+  <div id="piano"></div>
+
+  <aside id="menu" hidden>
+    <div class="menu-head">
+      <span class="brand">&#127929; PiTV</span>
+      <span class="grow"></span>
+      <button id="menuClose" class="btn iconbtn" title="Close menu">&#10005;</button>
+    </div>
+    <div class="menu-body">
+      <div class="sect">
+        <h3>Song</h3>
+        <div class="field"><span>Category</span><select id="groupSel"></select></div>
+        <div class="field"><span>Song</span>
+          <span style="display:flex;gap:10px;align-items:center;min-width:200px">
+            <select id="songSel" style="flex:1"></select>
+            <button id="fav" class="btn iconbtn" title="Favorite this song">&#9734;</button>
+          </span>
+        </div>
+        <div class="field"><span>Add your own</span>
+          <span style="display:flex;gap:10px;align-items:center;min-width:200px">
+            <input id="fileInput" type="file" accept=".mid,.midi,audio/midi" multiple hidden>
+            <button id="uploadBtn" class="btn">&#11014; Upload MIDIs</button>
+          </span>
+        </div>
+        <p class="hint">Pick one or many .mid files from any PC — they're saved on the Pi under "Uploads".</p>
+      </div>
+      <div class="sect">
+        <h3>Tracks</h3>
+        <div class="field"><span>Which part you play</span>
+          <select id="handSel">
+            <option value="both">Both hands</option>
+            <option value="R">Right hand</option>
+            <option value="L">Left hand</option>
+          </select>
+        </div>
+        <p class="hint">play = you play it (shown) · off = background (heard, hidden) · mute = silent</p>
+        <div id="instrPanel"></div>
+      </div>
+      <div class="sect">
+        <h3>How it plays</h3>
+        <div class="field"><span>Mode</span>
+          <select id="modeSel">
+            <option value="follow">Follow you (waits for you)</option>
+            <option value="along">Play along (keeps going)</option>
+            <option value="listen">Listen (plays itself)</option>
+          </select>
+        </div>
+        <div class="field"><span>Speed</span>
+          <select id="speedSel">
+            <option value="0.5">50%</option><option value="0.6">60%</option>
+            <option value="0.7">70%</option><option value="0.8">80%</option>
+            <option value="0.9">90%</option><option value="1" selected>100%</option>
+            <option value="1.1">110%</option><option value="1.25">125%</option>
+            <option value="1.5">150%</option><option value="2">200%</option>
+          </select>
+        </div>
+        <div class="field"><span>Octave shift</span>
+          <select id="transSel">
+            <option value="auto" selected>Auto (fit keyboard)</option>
+            <option value="24">+2 octaves</option><option value="12">+1 octave</option>
+            <option value="0">No shift (original pitch)</option>
+            <option value="-12">-1 octave</option><option value="-24">-2 octaves</option>
+          </select>
+        </div>
+      </div>
+      <div class="sect">
+        <h3>Loop a passage</h3>
+        <div id="loopPanel"></div>
+      </div>
+      <div class="sect">
+        <h3>Display &amp; sound</h3>
+        <div class="field"><span>Note-name labels</span><button id="names" class="btn">Names: on</button></div>
+        <div class="field"><span>Keyboard size</span>
+          <select id="kbdSel" title="Match your keyboard; other keys are dimmed">
+            <option value="88">88 keys</option><option value="76">76 keys</option>
+            <option value="61">61 keys</option><option value="49">49 keys</option>
+            <option value="37">37 keys</option><option value="25">25 keys</option>
+          </select>
+        </div>
+        <div class="field"><span>Sound on this device</span><button id="sound" class="btn">&#128266; Off</button></div>
+        <p class="hint">On the Pi/TV the sound comes from the Pi itself — leave this off. Turn it on for a tablet or laptop.</p>
+      </div>
+    </div>
+    <div class="menu-foot">
+      <button id="startBtn" class="btn">&#9654; Start</button>
+    </div>
+  </aside>
+
+  <script src="vendor/wafplayer.js"></script>
+  <script src="vendor/piano.js"></script>
+  <script src="render.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

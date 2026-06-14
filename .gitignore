@@ -1,0 +1,24 @@
+# Python build/cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+*~
+
+# Reference clone — PianoBooster has its own upstream .git; tracked separately, not here
+/pianobooster/
+
+# Machine-local Claude settings (keep .claude/agents/, drop local overrides)
+.claude/settings.local.json
+.claude/projects/
+
+# Stray screenshots from debugging
+/ui*.png
+/kl.png
+/kc.png
+/pitv_*.png
