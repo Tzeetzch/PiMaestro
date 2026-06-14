@@ -51,14 +51,33 @@ timing-badge class regression; per-song settings keyed by realpath; MIDI parser 
 more silent track loss); SSE `hello` snapshot on connect (fresh/reconnected client renders the
 song, not a blank stage); accompaniment uses **real note velocities** (was fixed 80); browser
 drops drums (were piano); FluidSynth light room reverb + gain 0.4. **Bigger directions NOT done:**
-- [ ] **TV/remote UX** (HIGH, two reviewers) — text ~2× for 10-ft distance, focus rings + D-pad
-      order, segmented controls instead of native `<select>`, default Game view, keyboard-seek.
-- [ ] **Make-it-fun for the kid** (HIGH, game review) — finish celebration + stars (data exists),
-      streak/combo, **Rhythm-Tap** onramp (tap timing, any pitch), anti-stuck assist ladder
-      (hint→demo→auto-advance so Follow never traps a child).
-- [ ] **Concurrency** (MED) — move broadcast + FluidSynth TCP sends OUT of `conductor._lock`.
-- [ ] Audio refinements: optional dedicated piano SF over FluidR3; forward sustain (CC64) in
-      accompaniment if the MIDIs carry it.
+- [x] **TV/remote UX** (HIGH, two reviewers) — D-pad/keyboard navigation across the whole UI
+      (arrows move a focus ring, Enter activates, Esc/Backspace = back, Space = play; Left/Right
+      adjust a focused `<select>` and seek the `#seek` slider). Seek is now `role=slider` with keys.
+      Remaining: text ~2× for 10-ft distance, segmented controls instead of native `<select>`.
+- [x] **Make-it-fun for the kid** (HIGH, game review) — end-of-song **celebration + 1–3 stars**
+      (from the good/late/early tally; per-song best in localStorage, shown on the song list) with
+      Play-again / Pick-another; **count-in** (visual 3-2-1 + audible woodblock clicks on the beat).
+      Still TODO: streak/combo, **Rhythm-Tap** onramp, anti-stuck assist ladder.
+- [x] **Concurrency** — FluidSynth TCP sends are non-blocking via `_Synth`'s background sender
+      thread (single FIFO worker); broadcast already non-blocking. Verified on Pi.
+- [x] **Audiophile** — accompaniment uses real velocities (AUTO_VEL fallback 80→90); FluidSynth
+      `synth.gain` 0.4→0.7 on the Pi (dense passages were timid on TV speakers). Remaining:
+      optional dedicated piano SF; forward sustain (CC64); per-GM-program WebAudioFont bank (browser).
+
+## Review pass 2 (2026-06-14) — 6-reviewer panel on the wizard menu + whole app
+Fixed batch (deployed): **menu wizard** (Home → Song picker w/ category tabs + list → per-song Setup
+→ game; device settings split off; Advanced disclosure hides octave/split/instruments; per-mode hint;
+removed dead Quit); **remote/keyboard navigation** (above); **celebration + count-in** (above);
+**reconnect/2nd-client state** (`hello` now carries play/hand/mode/speed; `pos` carries `file` so a stale
+client reconnects on a song switch); **browser-sound robustness** (separate live/accompaniment voice pools
+so backing can't steal the player's key; bounded note length so a dropped note-off self-releases; release
+tail); **menu race** (monotonic load token — a stale async load bails instead of clobbering); **played keys
+on the staff** (PianoBooster behaviour — live presses drawn at the play line); perf (debounced per-song
+save, throttled seek/score DOM writes, cached `measureText`); engine `_resync_after_change` helper; wrote
+`webpiano/docs/ARCHITECTURE.md` (was referenced by 6 files, didn't exist).
+Known follow-ups: per-GM preset bank (assets); trim/lazy-load VM payload for huge MIDIs; test harness over
+song.py/conductor.py; single-global-session is intentional (documented).
 
 ## UI/UX — decluttered into 3 zones (2026-06-14)
 The header had ~16 controls in one row. Reorganised (media/practice-app pattern, NOT PianoBooster):
@@ -116,7 +135,8 @@ grids). The single highest-leverage change is a `speed` multiplier in `conductor
        name chips in `drawNotation`; remembered in localStorage (`pitv.names`). `DONE`
 5. [ ] **Per-part + own-piano volume** (S) — FluidSynth `cc <ch> 7 <v>`; sliders in the
        Instruments panel. `TODO`
-6. [ ] **Count-in clicks** (S) — "3-2-1-go" on the beat grid before Play/after a loop. `TODO`
+6. [x] **Count-in** — visual 3-2-1 over the stage during the pre-roll + audible woodblock clicks
+       (GM drums ch9) on the opening beat interval before t=0. `DONE`
 7. [x] **Save settings per song** — Pi-side JSON store (`~/.config/pitv/song-settings.json`,
        atomic write, keyed by song path) so settings follow the song to any client.
        `GET /settings?file=` + `cmd:save_settings`. Saves part(hand+play)/speed/octave/mode;
