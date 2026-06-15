@@ -484,6 +484,10 @@
         sel.onchange = () => { control({ cmd: 'part', ch: p.ch, program: +sel.value }).catch(() => {}); };
         row.appendChild(sel);
       }
+      const vol = document.createElement('input');                 // per-instrument volume (CC7)
+      vol.type = 'range'; vol.min = 0; vol.max = 127; vol.value = 100; vol.className = 'vol'; vol.title = 'Volume';
+      vol.oninput = () => { control({ cmd: 'part', ch: p.ch, volume: +vol.value }).catch(() => {}); };
+      row.appendChild(vol);
       const lab = document.createElement('label');
       const cb = document.createElement('input'); cb.type = 'checkbox';
       cb.onchange = () => { control({ cmd: 'part', ch: p.ch, mute: cb.checked }).catch(() => {}); };

@@ -248,7 +248,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 _save_settings_for(os.path.realpath(f), {"played": time.time()})
             self._json({"ok": True})
         elif cmd == "part":
-            conductor.set_part(req.get("ch"), req.get("mute"), req.get("program")); self._json({"ok": True})
+            conductor.set_part(req.get("ch"), req.get("mute"), req.get("program"), req.get("volume")); self._json({"ok": True})
         elif cmd == "pi_mute":
             conductor.set_pi_muted(bool(req.get("on"))); self._json({"ok": True})
         else:

@@ -20,7 +20,7 @@ import time
 LOOKAHEAD = 3.5          # seconds of lead-in (notes fall from the top before t=0)
 TICK = 0.025             # ~40 Hz play-clock / state stream
 AT_LINE_EPS = 0.0010     # tolerance for "note has reached the hit line"
-EARLY_WINDOW = 0.15      # accept a note this much BEFORE the line; earlier than this = "too early", keep waiting
+EARLY_WINDOW = 0.30      # accept a note played up to this much BEFORE the line (forgiving)
 CHORD_WINDOW = 0.45      # all notes of a chord must be pressed within this of each other
 AUTO_VEL = 90            # velocity for auto-played (accompaniment) notes (lacking their own velocity)
 AUTO_GAIN = 0.6          # scale accompaniment velocity DOWN so the backing sits under the player's keys
@@ -78,6 +78,9 @@ class _Synth:
 
     def gain(self, g):
         self._send(f"gain {g}")            # FluidSynth master gain (0 = silent)
+
+    def cc(self, ch, ctrl, val):
+        self._send(f"cc {ch} {ctrl} {val}")   # MIDI control change (e.g. CC7 = channel volume)
 
     def transpose(self, semis):
         """Transpose the KEYBOARD's incoming MIDI (ALSA->router->synth) by `semis`, so a
@@ -228,14 +231,16 @@ class Conductor:
         """Silence the Pi's own output (when a browser device is the speaker) via FluidSynth gain."""
         self._synth.gain(0.0 if on else 0.7)
 
-    def set_part(self, ch, mute=None, program=None):
-        """Instruments panel: change a part's instrument and/or mute it (accompaniment)."""
+    def set_part(self, ch, mute=None, program=None, volume=None):
+        """Instruments panel: change a part's instrument, volume (CC7), and/or mute it."""
         if ch is None:
             return
         ch = int(ch)
         with self._lock:
             if program is not None:
                 self._synth.prog(ch, int(program))
+            if volume is not None:
+                self._synth.cc(ch, 7, max(0, min(127, int(volume))))   # per-instrument volume
             if mute is not None:
                 self._muted.discard(ch) if not mute else self._muted.add(ch)
                 self._rebuild_auto()
