@@ -28,7 +28,7 @@
         speedSel = $('speedSel'), kbdSel = $('kbdSel'), transSel = $('transSel'),
         loopPanel = $('loopPanel'), scoreEl = $('score'),
         seekEl = $('seek'), seekFill = $('seekfill'), namesBtn = $('names'),
-        menuBtn = $('menuBtn'), menu = $('menu'), menuClose = $('menuClose'), startBtn = $('startBtn'),
+        stage = $('stage'), menu = $('menu'), menuClose = $('menuClose'), startBtn = $('startBtn'),
         favBtn = $('fav'), uploadBtn = $('uploadBtn'), fileInput = $('fileInput'), splitSel = $('splitSel'),
         menuBack = $('menuBack'), menuSettings = $('menuSettings'), menuTitle = $('menuTitle'), groupTabs = $('groupTabs'), songList = $('songList'),
         libTitle = $('libTitle'), libSub = $('libSub'),
@@ -57,10 +57,15 @@
     menuClose.hidden = !loadedFile;                 // can only return to a game once a song is loaded
     if (kbd) setTimeout(() => focusFirst(), 0);     // land the remote's focus on this screen
   }
-  // The ☰ opens straight to the song's Setup if one's loaded, else the Library.
-  function openMenu() { menu.hidden = false; showScreen(loadedFile ? 'setup' : 'songs'); }
-  function closeMenu() { menu.hidden = true; }
-  menuBtn.onclick = () => { if (menu.hidden) openMenu(); else closeMenu(); };
+  // Two mutually-exclusive top-level views: the Menu (Library/Setup/Settings) and the Stage
+  // (the playing screen). The Stage exists ONLY while playing or paused — never behind the menu.
+  function showStage() {
+    menu.hidden = true; stage.hidden = false;
+    requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));   // canvas was display:none -> re-measure
+  }
+  function showMenu(scr) { stage.hidden = true; menu.hidden = false; if (scr) showScreen(scr); }
+  function openMenu() { showMenu(loadedFile ? 'setup' : 'songs'); }
+  function closeMenu() { showStage(); }       // "Close" = back to the (loaded) song's stage
   menuClose.onclick = closeMenu;
   menuBack.onclick = () => showScreen('songs');     // Setup/Settings -> back to the Library
   menuSettings.onclick = () => showScreen('settings');
@@ -409,7 +414,7 @@
     const wantPlay = !playing;            // decide BEFORE the await — `playing` may change during it
     setPlayBtn(wantPlay);
     if (NEXT) PiTV.setClock(wantPlay, +speedSel.value);   // optimistic: pause/play feels instant locally
-    if (wantPlay) { markPlayed(loadedFile); endedShown = false; finish.hidden = true; closePause(); }  // fresh run
+    if (wantPlay) { markPlayed(loadedFile); endedShown = false; finish.hidden = true; closePause(); showStage(); }  // fresh run
     try {
       await control({ cmd: wantPlay ? 'play' : 'stop' });
       if (!wantPlay) openPause();          // manual stop -> the pause screen (quick tweaks / quit)
@@ -663,7 +668,7 @@
     if (kbd) setTimeout(() => focusAt(finAgain), 0);
   }
   finAgain.onclick = async () => { finish.hidden = true; endedShown = false; try { await control({ cmd: 'reset' }); } catch (e) {} playBtn.click(); };
-  finPick.onclick = () => { finish.hidden = true; endedShown = false; menu.hidden = false; showScreen('songs'); };
+  finPick.onclick = () => { finish.hidden = true; endedShown = false; showMenu('songs'); };
 
   /* ---- pause screen (manual stop): quick no-reload tweaks + resume / restart / quit ---- */
   function openPause() {
@@ -680,13 +685,13 @@
   pHand.onchange = () => { handSel.value = pHand.value; handSel.onchange(); };
   pResume.onclick = () => { closePause(); if (!playing) playBtn.click(); };
   pRestart.onclick = async () => { closePause(); setPlayBtn(false); if (NEXT) PiTV.setClock(false); try { await control({ cmd: 'reset' }); } catch (e) {} playBtn.click(); };
-  pMore.onclick = () => { closePause(); openMenu(); };
-  pQuit.onclick = async () => {                                  // unload the song and go back to the picker
+  pMore.onclick = () => { closePause(); showMenu('setup'); };
+  pQuit.onclick = async () => {                                  // unload the song and go back to the Library
     closePause(); setPlayBtn(false);
     if (NEXT) PiTV.setClock(false);
     try { await control({ cmd: 'stop' }); } catch (e) {}
     loadedFile = null;                                           // next Play reloads the song fresh
-    menu.hidden = false; showScreen('songs');
+    showMenu('songs');
   };
 
   /* ---- D-pad / keyboard navigation (TV remote: arrows + Enter + Back) ---- */
@@ -695,7 +700,7 @@
   function navCols() {
     if (!pauseEl.hidden) return [[pMode, pSpeed, pHand, pResume, pRestart, pMore, pQuit].filter(vis)];
     if (!finish.hidden) return [[finAgain, finPick].filter(vis)];
-    if (menu.hidden) return [[playBtn, resetBtn, viewBtn, menuBtn, seekEl].filter(vis)];
+    if (menu.hidden) return [[playBtn, resetBtn, viewBtn, seekEl].filter(vis)];
     const sc = $(SCREENS[screen]);
     if (screen === 'songs') {                             // two columns: category tabs | song list (+ upload)
       const tabs = Array.from(groupTabs.querySelectorAll('.gtab')).filter(vis);
@@ -751,6 +756,7 @@
         if (!pauseEl.hidden) pResume.click();
         else if (!finish.hidden) { /* leave celebration via its buttons */ }
         else if (!menu.hidden) { if (screen === 'songs') { if (loadedFile) closeMenu(); } else menuBack.onclick(); }
+        else if (playing) playBtn.click();    // on the stage: Esc pauses
         else openMenu();
         e.preventDefault(); break;
       case ' ': case 'Spacebar':

@@ -57,6 +57,9 @@
   .dim{ color:var(--dim); }
 
   /* ============================ play stage ============================ */
+  /* The stage is a real view, shown ONLY while playing or paused — not hidden behind the menu. */
+  #stage[hidden]{ display:none; }
+  #stage{ flex:1 1 0; min-height:0; display:flex; flex-direction:column; }
   header{ flex:0 0 auto; display:flex; align-items:center; gap:14px; padding:12px 20px;
     background:linear-gradient(180deg,rgba(13,19,28,.9),rgba(13,19,28,.55)); backdrop-filter:blur(8px);
     border-bottom:1px solid var(--line); z-index:3; }
@@ -203,27 +206,28 @@
 </style>
 </head>
 <body>
-  <!-- ===================== play stage ===================== -->
-  <header>
-    <button id="menuBtn" class="btn icon ghost" title="Menu">&#9776;</button>
-    <span class="brand"><span class="logo">&#127929;</span> PiMaestro</span>
-    <span id="song" class="dim"></span>
-    <span class="grow"></span>
-    <span id="score" class="badge" title="Timing: early / good / late per note you play">Timing &mdash;</span>
-    <span id="status" class="dot" title="connecting"></span>
-  </header>
+  <!-- ===================== play stage (only while playing / paused) ===================== -->
+  <div id="stage" hidden>
+    <header>
+      <span class="brand"><span class="logo">&#127929;</span> PiMaestro</span>
+      <span id="song" class="dim"></span>
+      <span class="grow"></span>
+      <span id="score" class="badge" title="Timing: early / good / late per note you play">Timing &mdash;</span>
+      <span id="status" class="dot" title="connecting"></span>
+    </header>
 
-  <div id="seek" tabindex="0" role="slider" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" title="Click or arrow-keys to jump"><div id="seekfill"></div></div>
-  <canvas id="fall"></canvas>
+    <div id="seek" tabindex="0" role="slider" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" title="Click or arrow-keys to jump"><div id="seekfill"></div></div>
+    <canvas id="fall"></canvas>
 
-  <div id="transport">
-    <button id="play" class="btn primary">&#9654; Play</button>
-    <button id="reset" class="btn icon" title="Back to start">&#8634;</button>
-    <span class="grow"></span>
-    <button id="view" class="btn">View: Notation</button>
+    <div id="transport">
+      <button id="play" class="btn primary">&#9654; Play</button>
+      <button id="reset" class="btn icon" title="Back to start">&#8634;</button>
+      <span class="grow"></span>
+      <button id="view" class="btn">View: Notation</button>
+    </div>
+
+    <div id="piano"></div>
   </div>
-
-  <div id="piano"></div>
 
   <!-- ===================== menu ===================== -->
   <aside id="menu" hidden>
