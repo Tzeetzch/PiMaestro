@@ -460,7 +460,8 @@ const PiTV = (function () {
         const y = yOf(nt.staff, nt.idx);
         const mine = (nt.n >= rangeLo && nt.n <= rangeHi) && (!playHand || nt.hand === playHand);
         const col = (Math.abs(nt.t - now) < 0.06 && wantedSet[nt.n]) ? C_WANT : (mine ? C_NOTE : C_DIM);
-        const t = nt.sym, solid = t === '16' || t === '8' || t === 'q', flags = t === '16' ? 2 : t === '8' ? 1 : 0;
+        const t = nt.sym, dotted = t.charAt(t.length - 1) === '.', base = dotted ? t.slice(0, -1) : t;
+        const solid = base !== 'h' && base !== 'w', flags = base === '16' ? 2 : base === '8' ? 1 : 0;
         const c = nt.staff === 'treble' ? trebleC : bassC, lw = 12 * s;
         // ledger lines (PB threshold |idx| >= 6)
         ctx.strokeStyle = C_STAVE; ctx.lineWidth = Math.max(1, s);
@@ -469,7 +470,7 @@ const PiTV = (function () {
         if (nt.acc) accidental(Math.abs(nt.acc) === 2 ? 2 : nt.acc, x - 16 * s, y, s, col);
         // stem (up, right side) + flags
         const noteW = solid ? 6 : 7;
-        if (t !== 'w') {
+        if (base !== 'w') {
           ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.4, 2 * s);
           ctx.beginPath(); ctx.moveTo(x + noteW * s, y); ctx.lineTo(x + noteW * s, y - 34 * s); ctx.stroke();
           let o = 34;
@@ -478,6 +479,10 @@ const PiTV = (function () {
         // note head (ported 12-vertex polygon) — solid uses the cached Path2D (R.3)
         if (solid) { ctx.fillStyle = col; fillGlyph(NOTEHEAD_PATH, x, y, s); }
         else { ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.4, 2 * s); strip(NOTEHEAD, x, y, s, true, false); }
+        if (dotted) {                                   // augmentation dot, right of the head (in the space if on a line)
+          const dy = (nt.idx % 2 === 0) ? y - step / 2 : y;
+          ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x + 11 * s, dy, Math.max(1.3, 1.8 * s), 0, 6.2832); ctx.fill();
+        }
         // note name in a chip, up-and-left of the note (clear of the up-right stem)
         if (showNames && nt.n <= 90 && nt._top && step >= 7) {
           const fh = step * 1.5;

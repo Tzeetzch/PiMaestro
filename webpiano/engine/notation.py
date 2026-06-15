@@ -71,19 +71,24 @@ def note_name(midi, key):
 
 
 def note_type(dur_ticks, ppqn):
-    """Duration (ticks) -> note-head symbol. Ported from Notation.cpp note-length
-    boundaries. Returns: '16' semiquaver, '8' quaver, 'q' crotchet, 'h' minim, 'w' semibreve."""
-    scale = ppqn / DEFAULT_PPQN
-
-    def b(v):
-        return v * scale
-
-    if dur_ticks < b(DEFAULT_PPQN / 4 + 10):
+    """Duration (ticks) -> note-head symbol, INCLUDING dotted notes. Boundaries are the
+    midpoints between adjacent note values measured in quarter-notes. A trailing '.' marks a
+    dot (1.5x). Symbols: '16' semiquaver, '8' quaver, '8.' dotted quaver, 'q' crotchet,
+    'q.' dotted crotchet, 'h' minim, 'h.' dotted minim (3 beats), 'w' semibreve.
+    (The old port stopped at 'w', so a 3-beat dotted-half was wrongly drawn as a whole note.)"""
+    q = dur_ticks / float(ppqn or DEFAULT_PPQN)     # length in quarter-notes
+    if q < 0.375:
         return "16"
-    if dur_ticks < b(DEFAULT_PPQN / 2 + 10):
+    if q < 0.625:
         return "8"
-    if dur_ticks < b(DEFAULT_PPQN + 10):
+    if q < 0.875:
+        return "8."
+    if q < 1.25:
         return "q"
-    if dur_ticks < b(DEFAULT_PPQN * 2 + 10):
+    if q < 1.75:
+        return "q."
+    if q < 2.5:
         return "h"
+    if q < 3.5:
+        return "h."
     return "w"
