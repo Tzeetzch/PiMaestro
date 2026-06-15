@@ -4,6 +4,23 @@
 (function () {
   const $ = id => document.getElementById(id);
   const NEXT = new URLSearchParams(location.search).has('next');   // R.4: opt-in local-clock + lean-stream path
+
+  // Tiny DOM builder so view code is declarative + DRY (no repeated createElement boilerplate).
+  // h('div', {class:'x', onclick:fn}, child, 'text', [more]) -> HTMLElement.
+  function h(tag, props, ...kids) {
+    const e = document.createElement(tag);
+    if (props) for (const k in props) {
+      const v = props[k];
+      if (v == null) continue;
+      if (k === 'class') e.className = v;
+      else if (k === 'html') e.innerHTML = v;
+      else if (k === 'tabIndex') e.tabIndex = v;
+      else if (k.startsWith('on')) e[k.toLowerCase()] = v;
+      else e.setAttribute(k, v);
+    }
+    for (const kid of kids.flat()) if (kid != null) e.append(kid.nodeType ? kid : document.createTextNode(kid));
+    return e;
+  }
   const statusEl = $('status'),
         playBtn = $('play'), resetBtn = $('reset'),
         viewBtn = $('view'), songLabel = $('song'),
@@ -13,17 +30,18 @@
         seekEl = $('seek'), seekFill = $('seekfill'), namesBtn = $('names'),
         menuBtn = $('menuBtn'), menu = $('menu'), menuClose = $('menuClose'), startBtn = $('startBtn'),
         favBtn = $('fav'), uploadBtn = $('uploadBtn'), fileInput = $('fileInput'), splitSel = $('splitSel'),
-        menuBack = $('menuBack'), menuHome = $('menuHome'), menuTitle = $('menuTitle'), groupTabs = $('groupTabs'), songList = $('songList'),
+        menuBack = $('menuBack'), menuSettings = $('menuSettings'), menuTitle = $('menuTitle'), groupTabs = $('groupTabs'), songList = $('songList'),
+        libTitle = $('libTitle'), libSub = $('libSub'),
         splitField = $('splitField'), modeHint = $('modeHint'),
         finish = $('finish'), finStars = $('finStars'), finSub = $('finSub'), finAgain = $('finAgain'), finPick = $('finPick'),
         countin = $('countin'),
         pauseEl = $('pause'), pMode = $('pMode'), pSpeed = $('pSpeed'), pHand = $('pHand'),
         pResume = $('pResume'), pRestart = $('pRestart'), pMore = $('pMore'), pQuit = $('pQuit');
 
-  /* ---- multi-screen menu: home -> song picker -> per-song setup -> game; settings off home ---- */
-  const SCREENS = { home: 'screenHome', songs: 'screenSongs', setup: 'screenSetup', settings: 'screenSettings' };
-  const TITLES = { home: '', songs: 'Choose a song', setup: '', settings: 'Settings' };
-  let screen = 'home';
+  /* ---- screens: Library (home) -> per-song Setup -> game; Settings via the gear ---- */
+  const SCREENS = { songs: 'screenSongs', setup: 'screenSetup', settings: 'screenSettings' };
+  const TITLES = { songs: '', setup: '', settings: 'Settings' };
+  let screen = 'songs';
   function showScreen(name) {
     screen = name;
     for (const k in SCREENS) $(SCREENS[k]).hidden = (k !== name);
@@ -34,21 +52,18 @@
       splitField.style.display = oneTrack ? '' : 'none';
     }
     menuTitle.textContent = TITLES[name] || '';
-    menuBack.hidden = (name === 'home');
-    menuHome.hidden = (name === 'home');            // explicit Home from anywhere
+    menuBack.hidden = (name === 'songs');           // Library is the root
+    menuSettings.hidden = (name === 'settings');
     menuClose.hidden = !loadedFile;                 // can only return to a game once a song is loaded
     if (kbd) setTimeout(() => focusFirst(), 0);     // land the remote's focus on this screen
   }
-  // The ☰ opens the menu where it makes sense: straight to the song's setup if one's loaded, else home.
-  function openMenu() { menu.hidden = false; showScreen(loadedFile ? 'setup' : 'home'); }
+  // The ☰ opens straight to the song's Setup if one's loaded, else the Library.
+  function openMenu() { menu.hidden = false; showScreen(loadedFile ? 'setup' : 'songs'); }
   function closeMenu() { menu.hidden = true; }
   menuBtn.onclick = () => { if (menu.hidden) openMenu(); else closeMenu(); };
   menuClose.onclick = closeMenu;
-  menuBack.onclick = () => { showScreen(screen === 'setup' ? 'songs' : 'home'); };
-  menuHome.onclick = () => { showScreen('home'); };
-  $('homeStart').onclick = () => showScreen('songs');
-  $('homeSettings').onclick = () => showScreen('settings');
-  startBtn.innerHTML = '&#9654; Play now';                 // distinct verb from Home "Start" (which just browses)
+  menuBack.onclick = () => showScreen('songs');     // Setup/Settings -> back to the Library
+  menuSettings.onclick = () => showScreen('settings');
   startBtn.onclick = () => { closeMenu(); if (!playing) playBtn.click(); };
 
   // Per-mode plain-language hint shown under the Mode dropdown.
@@ -207,42 +222,47 @@
     if (g === RECENT) return recentList();
     return songsByGroup[g] || [];
   }
-  // Left column: one clickable tab per category. Selecting a tab repaints the song list.
+  // --- components (DRY view builders) ---
+  function gtab(g) {
+    return h('button', { class: 'gtab' + (g === currentGroup ? ' on' : ''), tabIndex: 0,
+      onclick: () => { currentGroup = g; buildGroupTabs(); } },
+      h('span', null, g), h('span', { class: 'count' }, String(songsForGroup(g).length)));
+  }
+  function coverGlyph(s) { return (s.title && s.title.trim()) ? s.title.trim()[0].toUpperCase() : '♫'; }
+  function songItem(s) {
+    const meta = [];
+    if (lib[s.file] && lib[s.file].fav) meta.push(h('span', { class: 'si-fav' }, '★'));
+    const best = +(localStorage.getItem(bestKey(s.file)) || 0);
+    if (best) meta.push(h('span', { class: 'si-stars' }, '★'.repeat(best)));
+    meta.push(h('span', null, s.group));
+    return h('li', { class: 'songitem' + (s.file === selFile ? ' on' : ''), tabIndex: 0,
+      onclick: () => selectSong(s.file) },
+      h('span', { class: 'cover' }, coverGlyph(s)),
+      h('span', { class: 'si-main' },
+        h('div', { class: 'si-title' }, s.title),
+        h('div', { class: 'si-meta' }, ...meta)));
+  }
+  // Left rail: one tab per category. Selecting a tab repaints the song list.
   function buildGroupTabs() {
     const names = groupNames();
     if (!currentGroup || !names.includes(currentGroup)) currentGroup = names[0] || null;
     groupTabs.innerHTML = '';
-    names.forEach(g => {
-      const b = document.createElement('button');
-      b.className = 'gtab' + (g === currentGroup ? ' on' : '');
-      b.textContent = g + ' (' + songsForGroup(g).length + ')';
-      b.onclick = () => { currentGroup = g; buildGroupTabs(); };
-      groupTabs.appendChild(b);
-    });
+    names.forEach(g => groupTabs.append(gtab(g)));
     fillSongList();
   }
-  // Right pane: the songs in the chosen category. Clicking one loads it and goes to setup.
+  // Right pane: the songs in the chosen category. Clicking one loads it and goes to Setup.
   function fillSongList() {
     songList.innerHTML = '';
     const songs = songsForGroup(currentGroup);
-    if (!songs.length) {
-      const e = document.createElement('li'); e.className = 'hint'; e.textContent = 'No songs here yet.';
-      songList.appendChild(e); return;
-    }
-    songs.forEach(s => {
-      const li = document.createElement('li');
-      li.className = 'songitem' + (s.file === selFile ? ' on' : '');
-      li.tabIndex = 0;                                    // focusable for D-pad / remote
-      li.textContent = ((lib[s.file] && lib[s.file].fav) ? '★ ' : '') + s.title;
-      const best = +(localStorage.getItem(bestKey(s.file)) || 0);
-      if (best) { const sp = document.createElement('span'); sp.className = 'stars-mini'; sp.textContent = ' ' + '★'.repeat(best); li.appendChild(sp); }
-      li.onclick = () => selectSong(s.file);
-      songList.appendChild(li);
-    });
+    libTitle.textContent = currentGroup || 'Songs';
+    libSub.textContent = songs.length ? (songs.length + (songs.length === 1 ? ' song' : ' songs')) : '';
+    if (!songs.length) { songList.append(h('li', { class: 'hint' }, 'No songs here yet.')); return; }
+    songs.forEach(s => songList.append(songItem(s)));
   }
   function fillSetupHead() {
     if (!currentVM) return;
     $('setupTitle').textContent = currentVM.title || '—';
+    const cv = document.querySelector('.setup-hero .cover'); if (cv) cv.textContent = coverGlyph(currentVM);
     const shift = currentVM.transpose || 0;
     const stag = shift ? ' · ' + (shift > 0 ? '+' : '') + (shift / 12) + ' oct' : '';
     $('setupSub').textContent = currentVM.notes.length + ' notes' + stag;
@@ -730,7 +750,7 @@
         kbd = true;
         if (!pauseEl.hidden) pResume.click();
         else if (!finish.hidden) { /* leave celebration via its buttons */ }
-        else if (!menu.hidden) { if (screen === 'home') { if (loadedFile) closeMenu(); } else menuBack.onclick(); }
+        else if (!menu.hidden) { if (screen === 'songs') { if (loadedFile) closeMenu(); } else menuBack.onclick(); }
         else openMenu();
         e.preventDefault(); break;
       case ' ': case 'Spacebar':
@@ -755,7 +775,7 @@
           adoptHello(m);
           setPlayBtn(!!m.playing);
           if (m.playing) closeMenu();        // resynced to a playing song -> show the stage
-          else if (!menu.hidden && screen === 'home') showScreen('setup');   // idle -> its setup (don't interrupt nav)
+          else if (!menu.hidden && screen === 'songs') showScreen('setup');   // idle -> its setup (don't interrupt nav)
         } else if (m.type === 'pos' && m.file && loadedFile && m.file !== loadedFile) {
           es.close(); setTimeout(connect, 60); return;    // stale view: reconnect for a clean hello snapshot
         }
