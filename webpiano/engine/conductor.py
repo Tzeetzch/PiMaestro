@@ -23,6 +23,7 @@ AT_LINE_EPS = 0.0010     # tolerance for "note has reached the hit line"
 EARLY_WINDOW = 0.30      # accept a note played up to this much BEFORE the line (forgiving)
 CHORD_WINDOW = 0.45      # all notes of a chord must be pressed within this of each other
 AUTO_VEL = 90            # velocity for auto-played (accompaniment) notes (lacking their own velocity)
+AUTO_GAIN = 0.6          # scale accompaniment velocity DOWN so the backing sits under the player's keys
 COUNT_IN = 4             # metronome clicks during the pre-roll, so the player knows when to start
 CLICK_CH, CLICK_NOTE, CLICK_VEL = 9, 76, 100   # GM drums: Hi Wood Block
 HOLD_EPS = 0.03          # accompaniment within this of a pending gate is held until you play it
@@ -410,7 +411,8 @@ class Conductor:
         while self._auto_i < len(self._auto) and self._auto[self._auto_i][0] <= limit:
             _, end, ch, pitch, vel = self._auto[self._auto_i]
             snd = max(0, min(127, pitch - self._shift))                   # play at original pitch
-            self._synth.noteon(ch, snd, vel)                             # Pi sound (real velocity)
+            bvel = max(1, min(127, int(vel * AUTO_GAIN)))                 # backing sits UNDER the player's keys
+            self._synth.noteon(ch, snd, bvel)
             self._sounding.append((end, ch, snd))
             self._auto_i += 1
         if self._sounding:
