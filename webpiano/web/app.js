@@ -332,6 +332,7 @@
       const shift = vm.transpose || 0;
       const stag = shift ? ' · ' + (shift > 0 ? '+' : '') + (shift / 12) + ' oct' : '';
       songLabel.textContent = '♪ ' + vm.title + ' · ' + vm.notes.length + ' notes' + stag;
+      if (NEXT && soundOn) soundResync();          // new song -> reload instruments + re-aim the scheduler
       return true;
     } catch (e) {
       songLabel.textContent = 'could not load song';
@@ -516,8 +517,86 @@
   applyNames();
   namesBtn.onclick = () => { names = !names; localStorage.setItem('pitv.names', names ? 'on' : 'off'); applyNames(); };
 
-  /* Sound is the Pi's job (FluidSynth -> HDMI / headphone jack), for every mode. The web app
-     is display + remote only; it makes no sound, so there's no in-browser synth here. */
+  /* ---- browser sound (?next only): TinySynth fed from the local clock + your live keys ----
+     The Pi is still the real instrument; this only lets a device that can't hear the Pi make
+     sound. Backing is SCHEDULED from the view-model on the local clock (no per-note stream),
+     held at the next gate in Follow; your live keys are sonified from the real noteon/noteoff. */
+  const sndHere = $('sndHere'), piMute = $('piMute'), sndRow = $('sndRow'), muteRow = $('muteRow');
+  let synth = null, soundOn = false, schedTimer = null, schedPtr = 0, piMuted = false, synthLoading = null, soundLastT = 0;
+  const SND_LOOKAHEAD = 0.2;
+  function isMine(nt) {                                 // notes YOU cover -> sonified live, not scheduled
+    if (mode === 'listen' || !currentPlay.includes(nt.ch)) return false;
+    if (currentHand && nt.hand !== currentHand) return false;
+    const [lo, hi] = kbdRange(); return nt.n >= lo && nt.n <= hi;
+  }
+  function firstNoteAtOrAfter(t) {
+    const ns = (currentVM && currentVM.notes) || []; let lo = 0, hi = ns.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (ns[m].t < t) lo = m + 1; else hi = m; } return lo;
+  }
+  function setSynthPrograms() {
+    if (!synth || !currentVM) return;
+    (currentVM.parts || []).forEach(p => { try { synth.setProgram(p.ch, p.program || 0); } catch (e) {} });
+    try { synth.setProgram(0, 0); } catch (e) {}        // live keys default to grand piano on ch0
+  }
+  function loadSynth() {
+    if (window.WebAudioTinySynth) return Promise.resolve();
+    if (!synthLoading) synthLoading = new Promise((res, rej) => {
+      const s = document.createElement('script'); s.src = 'vendor/webaudio-tinysynth.js';
+      s.onload = res; s.onerror = rej; document.head.appendChild(s);
+    });
+    return synthLoading;
+  }
+  async function ensureSynth() {
+    await loadSynth();
+    if (!synth) synth = new WebAudioTinySynth({ quality: 1, useReverb: 1, voices: 64 });
+    const ac = synth.getAudioContext(); if (ac && ac.state === 'suspended') await ac.resume();
+    setSynthPrograms();
+  }
+  function schedTick() {                                // schedule backing a hair ahead of the clock
+    if (!soundOn || !synth || !currentVM) return;
+    const st = PiTV.clockState(); if (!st.playing) return;
+    const ac = synth.getAudioContext(), audioNow = ac.currentTime, ns = currentVM.notes;
+    while (schedPtr < ns.length) {
+      const nt = ns[schedPtr];
+      if (nt.t >= st.limit) break;                      // hold backing at the next gate (Follow)
+      if (nt.t > st.t + SND_LOOKAHEAD) break;           // beyond the lookahead window
+      schedPtr++;
+      if (nt.t < st.t - 0.1 || isMine(nt)) continue;     // already past, or you play it live
+      const at = audioNow + Math.max(0, (nt.t - st.t) / st.speed);
+      synth.noteOn(nt.ch, nt.n, nt.v || 80, at);
+      synth.noteOff(nt.ch, nt.n, at + Math.max(0.05, nt.d / st.speed));
+    }
+  }
+  function soundResync() {                              // after seek / loop / song change: drop + re-aim
+    if (!soundOn || !synth) return;
+    try { synth.reset(); } catch (e) {}
+    setSynthPrograms();
+    schedPtr = firstNoteAtOrAfter(PiTV.clockState().t);
+  }
+  function liveSound(note, on, vel) {                   // your pressed keys (what you actually played)
+    if (!soundOn || !synth) return;
+    if (on) synth.noteOn(0, note, vel || 96, 0); else synth.noteOff(0, note, 0);
+  }
+  if (NEXT) {
+    sndRow.hidden = false; muteRow.hidden = false;
+    sndHere.onclick = async () => {
+      if (!soundOn) {
+        try { await ensureSynth(); } catch (e) { sndHere.textContent = 'sound load failed'; return; }
+        soundOn = true; sndHere.classList.add('on'); sndHere.innerHTML = '&#128266; On';
+        schedPtr = firstNoteAtOrAfter(PiTV.clockState().t);
+        schedTimer = setInterval(schedTick, 60);
+      } else {
+        soundOn = false; sndHere.classList.remove('on'); sndHere.innerHTML = '&#128266; Off';
+        clearInterval(schedTimer); schedTimer = null; try { synth.reset(); } catch (e) {}
+      }
+    };
+    piMute.onclick = () => {
+      piMuted = !piMuted;
+      piMute.classList.toggle('on', piMuted);
+      piMute.innerHTML = piMuted ? '&#128263; Pi muted' : '&#128264; Mute Pi';
+      control({ cmd: 'pi_mute', on: piMuted }).catch(() => {});
+    };
+  }
 
   // Timing feedback: running tallies + an instant per-note flash (early / good / late).
   let timingTally = null, flashing = false, flashTimer = null;
@@ -650,6 +729,8 @@
         lastT = m.t;
         if (NEXT) {                          // local clock: pos is just a correction heartbeat
           if (m.gates) PiTV.setGates(m.gates);   // hello carries gates
+          if (m.t < soundLastT - 0.3) soundResync();   // seek/loop jumped back -> re-aim the backing
+          soundLastT = m.t;
           PiTV.correctNow(m.t); PiTV.setClock(m.playing, m.speed);
         } else {
           PiTV.setPos(m.t, m.waiting, m.wanted);
@@ -674,8 +755,10 @@
         if (NEXT) PiTV.setGates(m.gates);   // gate set changed (load / part / range / mode)
       } else if (m.type === 'noteon') {
         PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true);   // light the key + show it on the staff
+        if (NEXT) liveSound(m.note, true, m.velocity);
       } else if (m.type === 'noteoff') {
         PiTV.highlight(m.note, false); PiTV.setPlayed(m.note, false);
+        if (NEXT) liveSound(m.note, false);
       }
     };
   })();

@@ -151,6 +151,8 @@ const PiTV = (function () {
   function setGates(times) { gateTimes = times || []; gatePtr = firstGateAtOrAfter(now); lastFrozen = -1; dirty = true; }
   function clearGateUpto(gi) { if (gi != null && gi + 1 > gatePtr) { gatePtr = gi + 1; dirty = true; } }   // a verdict = that gate is done
   function setFreezeMode(on) { freezeMode = !!on; dirty = true; }
+  // For the browser-sound scheduler: current clock + the next-gate ceiling (don't schedule backing past it).
+  function clockState() { return { t: now, playing: clockPlaying, speed: clockSpeed, limit: (freezeMode && gatePtr < gateTimes.length) ? gateTimes[gatePtr] : Infinity }; }
   // Gentle drift correction from the throttled position heartbeat; snap on a big jump (seek/loop).
   function correctNow(t) {
     if (!clockOn || t == null) return;
@@ -528,5 +530,5 @@ const PiTV = (function () {
   }
 
   return { buildKeyboard, highlight, attachCanvas, setSong, setPos, setPlayed, setView, setPlay, setRange, setLoop, setNames,
-           enableClock, setClock, setGates, clearGateUpto, setFreezeMode, correctNow };
+           enableClock, setClock, setGates, clearGateUpto, setFreezeMode, correctNow, clockState };
 })();

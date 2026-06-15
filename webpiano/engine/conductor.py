@@ -75,6 +75,9 @@ class _Synth:
         for ch in range(16):
             self._send(f"cc {ch} 123 0")   # all-notes-off controller
 
+    def gain(self, g):
+        self._send(f"gain {g}")            # FluidSynth master gain (0 = silent)
+
     def transpose(self, semis):
         """Transpose the KEYBOARD's incoming MIDI (ALSA->router->synth) by `semis`, so a
         pressed key can sound at a different pitch — in-engine, zero added latency. TCP
@@ -218,6 +221,10 @@ class Conductor:
                     self._seek_to(a)
                     self._seek_auto(a)
         self._emit()
+
+    def set_pi_muted(self, on):
+        """Silence the Pi's own output (when a browser device is the speaker) via FluidSynth gain."""
+        self._synth.gain(0.0 if on else 0.7)
 
     def set_part(self, ch, mute=None, program=None):
         """Instruments panel: change a part's instrument and/or mute it (accompaniment)."""

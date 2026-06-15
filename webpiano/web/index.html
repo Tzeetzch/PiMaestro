@@ -293,7 +293,9 @@
               <option value="37">37 keys</option><option value="25">25 keys</option>
             </select>
           </div>
-          <p class="hint">Sound comes from the Pi itself (HDMI / headphone jack) &mdash; this screen is display only.</p>
+          <div class="field" id="sndRow" hidden><span>Play sound on this device</span><button id="sndHere" class="btn">&#128266; Off</button></div>
+          <div class="field" id="muteRow" hidden><span>Mute the Pi's speaker</span><button id="piMute" class="btn">&#128264; Mute Pi</button></div>
+          <p class="hint">Sound comes from the Pi itself (HDMI / headphone jack). On a device that can't hear the Pi, turn on "Play sound on this device" (and mute the Pi to avoid hearing both).</p>
         </div>
       </div>
     </section>

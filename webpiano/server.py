@@ -249,6 +249,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({"ok": True})
         elif cmd == "part":
             conductor.set_part(req.get("ch"), req.get("mute"), req.get("program")); self._json({"ok": True})
+        elif cmd == "pi_mute":
+            conductor.set_pi_muted(bool(req.get("on"))); self._json({"ok": True})
         else:
             self.send_error(400, "unknown cmd")
 
