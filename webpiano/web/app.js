@@ -3,7 +3,6 @@
    Timing + Follow-You gating live on the Pi, not here. */
 (function () {
   const $ = id => document.getElementById(id);
-  const NEXT = new URLSearchParams(location.search).has('next');   // R.4: opt-in local-clock + lean-stream path
 
   // Tiny DOM builder so view code is declarative + DRY (no repeated createElement boilerplate).
   // h('div', {class:'x', onclick:fn}, child, 'text', [more]) -> HTMLElement.
@@ -23,7 +22,7 @@
   }
   function fmtTime(s) { s = Math.max(0, s | 0); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
   const statusEl = $('status'),
-        playBtn = $('play'), resetBtn = $('reset'),
+        backBtn = $('quitStage'), playBtn = $('play'), resetBtn = $('reset'),
         viewBtn = $('view'), songLabel = $('song'),
         handSel = $('handSel'), modeSel = $('modeSel'), instrPanel = $('instrPanel'),
         speedSel = $('speedSel'), kbdSel = $('kbdSel'), transSel = $('transSel'),
@@ -89,7 +88,7 @@
 
   PiTV.buildKeyboard($('piano'));
   PiTV.attachCanvas($('fall'));
-  if (NEXT) PiTV.enableClock();                    // render runs its own clock; pos frames only correct it
+  PiTV.enableClock();                              // render runs its own clock; pos frames only correct it
 
   let loadedFile = null, mode = 'follow', playing = false, currentVM = null, currentPlay = [], currentHand = null;
   let transpose = 'auto';                       // octave shift to fit the keyboard ('auto' or semitones)
@@ -146,7 +145,7 @@
   };
   speedSel.onchange = () => {
     localStorage.setItem('pitv.speed', speedSel.value);
-    if (NEXT) PiTV.setClock(playing, +speedSel.value);
+    PiTV.setClock(playing, +speedSel.value);
     control({ cmd: 'speed', mult: +speedSel.value }).catch(() => {});
     saveCurrent();
   };
@@ -244,7 +243,7 @@
   function songItem(s) {
     const meta = [];
     if (lib[s.file] && lib[s.file].fav) meta.push(h('span', { class: 'si-fav' }, '★'));
-    const best = +(localStorage.getItem(bestKey(s.file)) || 0);
+    const best = (lib[s.file] && lib[s.file].best) || 0;
     if (best) meta.push(h('span', { class: 'si-stars' }, '★'.repeat(best)));
     meta.push(h('span', null, s.group));
     return h('li', { class: 'songitem' + (s.file === selFile ? ' on' : ''), tabIndex: 0,
@@ -268,7 +267,11 @@
     const songs = songsForGroup(currentGroup);
     libTitle.textContent = currentGroup || 'Songs';
     libSub.textContent = songs.length ? (songs.length + (songs.length === 1 ? ' song' : ' songs')) : '';
-    if (!songs.length) { songList.append(h('li', { class: 'hint' }, 'No songs here yet.')); return; }
+    if (!songs.length) {
+      songList.append(h('li', { class: 'hint empty', tabIndex: 0, onclick: () => uploadBtn.click() },
+        'No songs yet — press here to upload MIDI files.'));
+      return;
+    }
     songs.forEach(s => songList.append(songItem(s)));
   }
   function fillSetupHead() {
@@ -330,11 +333,12 @@
     currentVM = m.vm; loadedFile = m.file || null; selFile = m.file || null;
     PiTV.setSong(m.vm); buildPartOptions(m.vm); showTranspose(m.vm.transpose || 0);
     songLabel.textContent = '♪ ' + m.vm.title + ' · ' + m.vm.notes.length + ' notes';
-    if (m.speed != null) speedSel.value = String(m.speed);
+    if (m.speed != null) { speedSel.value = String(m.speed); PiTV.setClock(m.playing, m.speed); }
     if (m.mode) { modeSel.value = m.mode; mode = m.mode; }
-    if (NEXT) PiTV.setFreezeMode(mode === 'follow');
+    PiTV.setFreezeMode(mode === 'follow');
     if (m.hand === 'R' || m.hand === 'L') handSel.value = m.hand;
     if (Array.isArray(m.play)) { currentPlay = m.play.slice(); currentHand = m.hand || null; PiTV.setPlay(currentPlay, currentHand); }
+    if (typeof m.pi_muted === 'boolean') setPiMuteBtn(m.pi_muted);   // reflect the engine's real mute state
     updateModeHint();
   }
 
@@ -369,7 +373,7 @@
       const shift = vm.transpose || 0;
       const stag = shift ? ' · ' + (shift > 0 ? '+' : '') + (shift / 12) + ' oct' : '';
       songLabel.textContent = '♪ ' + vm.title + ' · ' + vm.notes.length + ' notes' + stag;
-      if (NEXT && soundOn) soundResync();          // new song -> reload instruments + re-aim the scheduler
+      if (soundOn) soundResync();                  // new song -> reload instruments + re-aim the scheduler
       return true;
     } catch (e) {
       songLabel.textContent = 'could not load song';
@@ -395,7 +399,7 @@
     transpose = transSel.value === 'auto' ? 'auto' : +transSel.value;
     split = +splitSel.value;
     mode = modeSel.value;
-    if (NEXT) PiTV.setFreezeMode(mode === 'follow');
+    PiTV.setFreezeMode(mode === 'follow');
     const ok = await loadSong(file, false, my);         // builds vm with that transpose/range (same token)
     if (my !== loadSeq) return;                         // superseded while loading
     restoring = false;
@@ -411,8 +415,10 @@
 
   function setPlayBtn(on) {
     playing = on;
-    playBtn.innerHTML = on ? '&#9209; Stop' : '&#9654; Play';
+    playBtn.innerHTML = on ? '&#10073;&#10073; Pause' : '&#9654; Play';   // it pauses (opens the pause menu), so say so
     playBtn.classList.toggle('on', on);
+    if (!on) { countin.hidden = true; if (countin.firstChild) countin.firstChild.textContent = ''; }  // every stop path clears the 3-2-1
+    if (typeof soundOn !== 'undefined' && soundOn) { on ? startSoundTimer() : stopSoundTimer(); }      // scheduler runs only while playing
   }
 
   /* ---- controls ---- */
@@ -421,7 +427,7 @@
     if (!loadedFile) return;
     const wantPlay = !playing;            // decide BEFORE the await — `playing` may change during it
     setPlayBtn(wantPlay);
-    if (NEXT) PiTV.setClock(wantPlay, +speedSel.value);   // optimistic: pause/play feels instant locally
+    PiTV.setClock(wantPlay, +speedSel.value);   // optimistic: pause/play feels instant locally
     if (wantPlay) { markPlayed(loadedFile); endedShown = false; finish.hidden = true; closePause(); go('stage'); }  // fresh run
     try {
       await control({ cmd: wantPlay ? 'play' : 'stop' });
@@ -430,13 +436,15 @@
   };
   resetBtn.onclick = async () => {
     setPlayBtn(false);
-    if (NEXT) PiTV.setClock(false);       // pos will snap the clock to the new position
+    PiTV.setClock(false);                 // pos will snap the clock to the new position
     try { await control({ cmd: 'reset' }); } catch (e) {}
   };
+  // Visible Back/Quit on the Stage (a TV remote can't discover Esc): pause + open the menu (which has Quit).
+  backBtn.onclick = () => { if (playing) playBtn.click(); else openPause(); };
   handSel.onchange = () => applyParts();
   modeSel.onchange = async () => {
     mode = modeSel.value;
-    if (NEXT) PiTV.setFreezeMode(mode === 'follow');   // only Follow freezes the local clock at gates
+    PiTV.setFreezeMode(mode === 'follow');   // only Follow freezes the local clock at gates
     updateModeHint();
     PiTV.setPlay(currentPlay, currentHand);
     saveCurrent();
@@ -560,7 +568,7 @@
   applyNames();
   namesBtn.onclick = () => { names = !names; localStorage.setItem('pitv.names', names ? 'on' : 'off'); applyNames(); };
 
-  /* ---- browser sound (?next only): TinySynth fed from the local clock + your live keys ----
+  /* ---- browser sound: TinySynth fed from the local clock + your live keys ----
      The Pi is still the real instrument; this only lets a device that can't hear the Pi make
      sound. Backing is SCHEDULED from the view-model on the local clock (no per-note stream),
      held at the next gate in Follow; your live keys are sonified from the real noteon/noteoff. */
@@ -620,40 +628,42 @@
     if (!soundOn || !synth) return;
     if (on) synth.noteOn(0, note, vel || 96, 0); else synth.noteOff(0, note, 0);
   }
-  if (NEXT) {
-    sndRow.hidden = false; muteRow.hidden = false;
-    sndHere.onclick = async () => {
-      if (!soundOn) {
-        try { await ensureSynth(); } catch (e) { sndHere.textContent = 'sound load failed'; return; }
-        soundOn = true; sndHere.classList.add('on'); sndHere.innerHTML = '&#128266; On';
-        schedPtr = firstNoteAtOrAfter(PiTV.clockState().t);
-        schedTimer = setInterval(schedTick, 60);
-      } else {
-        soundOn = false; sndHere.classList.remove('on'); sndHere.innerHTML = '&#128266; Off';
-        clearInterval(schedTimer); schedTimer = null; try { synth.reset(); } catch (e) {}
-      }
-    };
-    piMute.onclick = () => {
-      piMuted = !piMuted;
-      piMute.classList.toggle('on', piMuted);
-      piMute.innerHTML = piMuted ? '&#128263; Pi muted' : '&#128264; Mute Pi';
-      control({ cmd: 'pi_mute', on: piMuted }).catch(() => {});
-    };
+  function startSoundTimer() { if (soundOn && !schedTimer) schedTimer = setInterval(schedTick, 60); }
+  function stopSoundTimer() { if (schedTimer) { clearInterval(schedTimer); schedTimer = null; } }
+  sndRow.hidden = false; muteRow.hidden = false;
+  sndHere.onclick = async () => {
+    if (!soundOn) {
+      try { await ensureSynth(); } catch (e) { sndHere.textContent = 'sound load failed'; return; }
+      soundOn = true; sndHere.classList.add('on'); sndHere.innerHTML = '&#128266; On';
+      schedPtr = firstNoteAtOrAfter(PiTV.clockState().t);
+      if (PiTV.clockState().playing) startSoundTimer();   // idle? don't burn CPU — armed on next Play
+    } else {
+      soundOn = false; sndHere.classList.remove('on'); sndHere.innerHTML = '&#128266; Off';
+      stopSoundTimer(); try { synth.reset(); } catch (e) {}
+    }
+  };
+  function setPiMuteBtn(on) {
+    piMuted = on;
+    piMute.classList.toggle('on', piMuted);
+    piMute.innerHTML = piMuted ? '&#128263; Pi muted' : '&#128264; Mute Pi';
   }
+  piMute.onclick = () => { setPiMuteBtn(!piMuted); control({ cmd: 'pi_mute', on: piMuted }).catch(() => {}); };
 
   // Timing feedback: running tallies + an instant per-note flash (early / good / late).
   let timingTally = null, flashing = false, flashTimer = null;
   function showTiming() {
     const t = timingTally;
     if (!t || !t.on) { scoreEl.textContent = 'Timing: —'; scoreEl.className = 'badge'; return; }
-    if (!(t.good + t.late + t.early + t.miss)) { scoreEl.textContent = 'Timing: ready'; scoreEl.className = 'badge'; return; }
-    scoreEl.textContent = '🎯 ' + t.good + ' good · ' + t.late + ' late · ' + t.early + ' early' + (t.miss ? ' · ' + t.miss + ' miss' : '');
+    if (!(t.good + t.late + t.early + t.miss + (t.wrong || 0))) { scoreEl.textContent = 'Timing: ready'; scoreEl.className = 'badge'; return; }
+    scoreEl.textContent = '🎯 ' + t.good + ' good · ' + t.late + ' late · ' + t.early + ' early'
+      + (t.miss ? ' · ' + t.miss + ' miss' : '') + (t.wrong ? ' · ' + t.wrong + ' wrong' : '');
     scoreEl.className = 'badge';
   }
-  function flashRating(kind, off) {
-    const label = { early: 'EARLY', good: 'GOOD!', late: 'LATE', miss: 'MISS' }[kind] || kind;
-    const cls = { early: 'r-early', good: 'good', late: 'low', miss: 'low' }[kind] || '';
-    const ms = (off != null && kind !== 'good') ? ' ' + (off > 0 ? '+' : '') + Math.round(off * 1000) + 'ms' : '';
+  function flashRating(kind, off, note) {
+    if (kind === 'wrong' && note != null) PiTV.flashWrong(note);   // flash the mis-pressed key red on the piano
+    const label = { early: 'EARLY', good: 'GOOD!', late: 'LATE', miss: 'MISS', wrong: 'WRONG' }[kind] || kind;
+    const cls = { early: 'r-early', good: 'good', late: 'low', miss: 'r-miss', wrong: 'r-miss' }[kind] || '';
+    const ms = (off != null && kind !== 'good' && kind !== 'wrong') ? ' ' + (off > 0 ? '+' : '') + Math.round(off * 1000) + 'ms' : '';
     scoreEl.textContent = label + ms;
     scoreEl.className = 'badge ' + cls;
     flashing = true; clearTimeout(flashTimer);
@@ -662,19 +672,37 @@
 
   /* ---- end-of-song celebration (reward loop) ---- */
   let endedShown = false;
-  function bestKey(f) { return 'pitv.best.' + f; }
   function celebrate() {
     const t = timingTally || {};
-    const tot = (t.good || 0) + (t.late || 0) + (t.early || 0) + (t.miss || 0);
-    const ratio = tot ? (t.good || 0) / tot : 1;          // Listen / no gates -> full marks
-    const stars = tot === 0 ? 3 : ratio >= 0.85 ? 3 : ratio >= 0.55 ? 2 : 1;
+    const good = t.good || 0, late = t.late || 0, early = t.early || 0, miss = t.miss || 0, wrong = t.wrong || 0;
+    const tot = good + late + early + miss;
+    if (mode === 'listen' || tot === 0) {           // watching, not graded — don't hand out 3 gold stars
+      finStars.textContent = '♪';
+      finSub.textContent = 'Nice listening!';
+      finish.hidden = false;
+      if (kbd) setTimeout(() => focusAt(finAgain), 0);
+      return;
+    }
+    let stars;
+    if (mode === 'follow') {
+      // Follow WAITS for you, so reaction time isn't a fault — reward correctness: notes hit vs
+      // wrong/missed. (Tight early/good/late timing is graded in Play-along, where the clock runs.)
+      const hit = good + late + early;
+      const acc = hit / (hit + miss + wrong || 1);
+      stars = acc >= 0.95 ? 3 : acc >= 0.7 ? 2 : 1;
+    } else {
+      const ratio = good / tot;                     // Play-along: timing IS the skill
+      stars = ratio >= 0.85 ? 3 : ratio >= 0.55 ? 2 : 1;
+    }
     finStars.textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
-    finSub.textContent = tot
-      ? (t.good + ' good · ' + t.late + ' late · ' + t.early + ' early' + (t.miss ? ' · ' + t.miss + ' missed' : ''))
-      : 'Nice listening!';
-    if (loadedFile) {
-      const prev = +(localStorage.getItem(bestKey(loadedFile)) || 0);
-      if (stars > prev) localStorage.setItem(bestKey(loadedFile), stars);
+    finSub.textContent = good + ' good · ' + late + ' late · ' + early + ' early'
+      + (miss ? ' · ' + miss + ' missed' : '') + (wrong ? ' · ' + wrong + ' wrong' : '');
+    if (loadedFile) {                               // best lives on the Pi so it follows the song to any client
+      const prev = (lib[loadedFile] && lib[loadedFile].best) || 0;
+      if (stars > prev) {
+        lib[loadedFile] = Object.assign({}, lib[loadedFile], { best: stars });
+        control({ cmd: 'save_settings', file: loadedFile, settings: { best: stars } }).catch(() => {});
+      }
     }
     finish.hidden = false;
     if (kbd) setTimeout(() => focusAt(finAgain), 0);
@@ -696,11 +724,11 @@
   pSpeed.onchange = () => { speedSel.value = pSpeed.value; speedSel.onchange(); };
   pHand.onchange = () => { handSel.value = pHand.value; handSel.onchange(); };
   pResume.onclick = () => { closePause(); if (!playing) playBtn.click(); };
-  pRestart.onclick = async () => { closePause(); setPlayBtn(false); if (NEXT) PiTV.setClock(false); try { await control({ cmd: 'reset' }); } catch (e) {} playBtn.click(); };
+  pRestart.onclick = async () => { closePause(); setPlayBtn(false); PiTV.setClock(false); try { await control({ cmd: 'reset' }); } catch (e) {} playBtn.click(); };
   pMore.onclick = () => { closePause(); go('setup'); };
   pQuit.onclick = async () => {                                  // unload the song and go back to the Library
     closePause(); setPlayBtn(false);
-    if (NEXT) PiTV.setClock(false);
+    PiTV.setClock(false);
     try { await control({ cmd: 'stop' }); } catch (e) {}
     loadedFile = null;                                           // next Play reloads the song fresh
     go('library');
@@ -712,14 +740,24 @@
   function navCols() {
     if (!pauseEl.hidden) return [[pMode, pSpeed, pHand, pResume, pRestart, pMore, pQuit].filter(vis)];
     if (!finish.hidden) return [[finAgain, finPick].filter(vis)];
-    if (view === 'stage') return [[playBtn, resetBtn, viewBtn, seekEl].filter(vis)];
+    if (view === 'stage') return [[backBtn, playBtn, resetBtn, viewBtn, seekEl].filter(vis)];
     const sc = $(SCREENS[view]);
-    if (view === 'library') {                             // two columns: category tabs | song list (+ upload)
+    if (view === 'library') {                             // category rail | the song GRID (modeled as real columns)
       const tabs = Array.from(groupTabs.querySelectorAll('.gtab')).filter(vis);
-      const items = Array.from(songList.querySelectorAll('.songitem')).filter(vis).concat([uploadBtn].filter(vis));
-      return [tabs, items];
+      const items = Array.from(songList.querySelectorAll('.songitem')).filter(vis);
+      if (!items.length) return [tabs, [songList.querySelector('.hint.empty'), uploadBtn].filter(vis)];
+      const rows = []; let top = null, row = null;        // group tiles into visual rows by their top edge...
+      for (const it of items) {
+        if (top === null || Math.abs(it.offsetTop - top) > 4) { row = []; rows.push(row); top = it.offsetTop; }
+        row.push(it);
+      }
+      const ncol = Math.max.apply(null, rows.map(r => r.length));   // ...then transpose to columns for D-pad L/R/U/D
+      const cols = [tabs];
+      for (let c = 0; c < ncol; c++) cols.push(rows.map(r => r[c]).filter(Boolean));
+      cols[cols.length - 1] = cols[cols.length - 1].concat([uploadBtn].filter(vis));
+      return cols;
     }
-    return [Array.from(sc.querySelectorAll('button, select, summary, .songitem')).filter(vis)];
+    return [Array.from(sc.querySelectorAll('button, select, summary, input[type=checkbox], input[type=range], .songitem')).filter(vis)];
   }
   function focusAt(el) {
     if (!el) return;
@@ -727,7 +765,11 @@
     try { el.focus({ preventScroll: false }); } catch (e) { el.focus(); }
     if (kbd) el.classList.add('nav-here');
   }
-  function focusFirst() { const c = navCols(); if (c.length && c[0].length) focusAt(c[0][0]); }
+  function focusFirst() {
+    if (view === 'setup' && vis(startBtn)) return focusAt(startBtn);          // primary action ("Play now") first
+    if (view === 'library') { const sel = songList.querySelector('.songitem.on'); if (vis(sel)) return focusAt(sel); }
+    const c = navCols(); if (c.length && c[0].length) focusAt(c[0][0]);
+  }
   function navMove(dRow, dCol) {
     const cols = navCols(); if (!cols.length) return;
     const cur = document.activeElement;
@@ -746,11 +788,17 @@
   document.addEventListener('pointerdown', () => { kbd = false; document.querySelectorAll('.nav-here').forEach(e => e.classList.remove('nav-here')); });
   document.addEventListener('keydown', e => {
     const k = e.key, ae = document.activeElement, tag = (ae && ae.tagName) || '';
-    if (tag === 'INPUT') return;                          // let text/number inputs (loop bars) use keys natively
+    if (tag === 'INPUT' && (ae.type === 'number' || ae.type === 'text')) return;   // loop-bar inputs use keys natively
     if (k === 'ArrowLeft' || k === 'ArrowRight') {
       if (tag === 'SELECT') {                             // remote: left/right adjust the focused setting
         const d = k === 'ArrowRight' ? 1 : -1, ni = ae.selectedIndex + d;
         if (ni >= 0 && ni < ae.options.length) { ae.selectedIndex = ni; ae.dispatchEvent(new Event('change')); }
+        e.preventDefault(); return;
+      }
+      if (tag === 'INPUT' && ae.type === 'range') {       // remote: left/right step a volume slider
+        const d = k === 'ArrowRight' ? 8 : -8;
+        ae.value = Math.max(+ae.min, Math.min(+ae.max, (+ae.value) + d));
+        ae.dispatchEvent(new Event('input'));
         e.preventDefault(); return;
       }
       if (ae === seekEl) { seekBy(k === 'ArrowRight' ? 1 : -1); e.preventDefault(); return; }
@@ -766,8 +814,8 @@
       case 'Backspace': case 'Escape':
         kbd = true;
         if (!pauseEl.hidden) pResume.click();
-        else if (!finish.hidden) { /* leave celebration via its buttons */ }
-        else if (view === 'stage') { if (playing) playBtn.click(); }   // Esc on the stage = pause
+        else if (!finish.hidden) finPick.click();                      // Back on the finish screen -> Library
+        else if (view === 'stage') { if (playing) playBtn.click(); else openPause(); }   // Esc on the stage = pause/menu
         else if (view !== 'home') go(PARENT[view] || 'home');          // up one level (Home is the root)
         e.preventDefault(); break;
       case ' ': case 'Spacebar':
@@ -792,20 +840,22 @@
         if (m.type === 'hello') {
           if (m.vm && m.playing && (!currentVM || m.file !== loadedFile)) {
             adoptHello(m); setPlayBtn(true); go('stage');   // join the in-progress song
+          } else if (m.vm && !currentVM) {
+            // The Pi has a song loaded but PAUSED and this is a fresh/2nd client with nothing of
+            // its own: adopt the model so the transport works (and Play isn't a dead no-op), but
+            // DON'T auto-navigate — stay on Home so a plain F5 lands clean.
+            adoptHello(m); setPlayBtn(!!m.playing);
           }
         } else if (m.type === 'pos' && m.file && loadedFile && m.file !== loadedFile) {
           es.close(); setTimeout(connect, 60); return;    // stale view: reconnect for a clean hello snapshot
         }
         lastT = m.t;
-        if (NEXT) {                          // local clock: pos is just a correction heartbeat
-          if (m.gates) PiTV.setGates(m.gates);   // hello carries gates
-          const jumpedBack = m.t < soundLastT - 0.3;   // seek/loop/reset went backward
-          soundLastT = m.t;
-          PiTV.correctNow(m.t); PiTV.setClock(m.playing, m.speed);
-          if (jumpedBack) soundResync();     // AFTER the clock snaps, so the scheduler re-aims at the NEW spot
-        } else {
-          PiTV.setPos(m.t, m.waiting, m.wanted);
-        }
+        // local clock: pos is just a correction heartbeat
+        if (m.gates) PiTV.setGates(m.gates);   // hello carries gates
+        const jumpedBack = m.t < soundLastT - 0.3;   // seek/loop/reset went backward
+        soundLastT = m.t;
+        PiTV.correctNow(m.t); PiTV.setClock(m.playing, m.speed);
+        if (jumpedBack) soundResync();     // AFTER the clock snaps, so the scheduler re-aims at the NEW spot
         // visual count-in: 3-2-1 during the pre-roll (negative play time)
         if (playing && m.t < 0) { const n = Math.min(3, Math.ceil(-m.t)); countin.firstChild.textContent = n > 0 ? n : ''; countin.hidden = n <= 0; }
         else if (!countin.hidden) countin.hidden = true;
@@ -813,26 +863,28 @@
         const pct = d > 0 ? Math.max(0, Math.min(100, m.t / d * 100)) : 0;
         if (Math.abs(pct - lastPct) >= 0.2) {
           seekFill.style.width = pct + '%'; seekEl.setAttribute('aria-valuenow', Math.round(pct));
+          seekEl.setAttribute('aria-valuetext', fmtTime(m.t) + ' of ' + fmtTime(d));   // screen reader: time, not bare %
           timeEl.textContent = fmtTime(m.t) + ' / ' + fmtTime(d); lastPct = pct;
         }
         timingTally = m.timing;
-        const tk = m.timing ? (m.timing.good + ',' + m.timing.late + ',' + m.timing.early + ',' + m.timing.miss + ',' + m.timing.on) : '';
+        const tk = m.timing ? [m.timing.good, m.timing.late, m.timing.early, m.timing.miss, m.timing.wrong, m.timing.on].join() : '';
         if (!flashing && tk !== lastTallyKey) { showTiming(); lastTallyKey = tk; }   // only repaint when it changes
         if (m.ended) {                       // song finished on its own (one-shot, never flips back)
           setPlayBtn(false); countin.hidden = true;
           if (!endedShown) { endedShown = true; celebrate(); }
         }
+      } else if (m.type === 'gate') {
+        PiTV.clearGateUpto(m.gi);           // the Pi cleared this gate (freeze cursor) -> local clock resumes here
       } else if (m.type === 'rating') {
-        flashRating(m.kind, m.off);         // instant early/good/late feedback per chord
-        if (NEXT) PiTV.clearGateUpto(m.gi); // verdict = that gate cleared -> local clock resumes
+        flashRating(m.kind, m.off, m.note); // feedback only now (early/good/late/miss/wrong) — gate-clear is its own event
       } else if (m.type === 'gates') {
-        if (NEXT) PiTV.setGates(m.gates);   // gate set changed (load / part / range / mode)
+        PiTV.setGates(m.gates);             // gate set changed (load / part / range / mode)
       } else if (m.type === 'noteon') {
         PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true);   // light the key + show it on the staff
-        if (NEXT) liveSound(m.note, true, m.velocity);
+        liveSound(m.note, true, m.velocity);
       } else if (m.type === 'noteoff') {
         PiTV.highlight(m.note, false); PiTV.setPlayed(m.note, false);
-        if (NEXT) liveSound(m.note, false);
+        liveSound(m.note, false);
       }
     };
   })();

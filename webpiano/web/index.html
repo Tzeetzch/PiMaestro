@@ -10,7 +10,7 @@
     --bg:#0a0d12; --bg2:#0e1620;
     --surface:#141b25; --surface2:#1a2331; --surface3:#222e3f;
     --line:#232e3c; --line2:#324154;
-    --txt:#eef2f7; --txt2:#a9b4c3; --dim:#6f7a8a;
+    --txt:#eef2f7; --txt2:#a9b4c3; --dim:#8a95a6;   /* lifted: readable across a room on a TV */
     --accent:#4d8dff; --accent2:#74a6ff; --accent-soft:rgba(77,141,255,.18);
     --good:#37d27e; --good2:#28b86c; --warn:#f5b942; --bad:#ff6472;
     --gold:#f5c542;
@@ -74,6 +74,7 @@
   .badge.good{ background:rgba(55,210,126,.15); border-color:var(--good); color:#9fe9c0; }
   .badge.low{ background:rgba(245,185,66,.14); border-color:var(--warn); color:#f3d49a; }
   .badge.r-early{ background:var(--accent-soft); border-color:var(--accent); color:var(--accent2); }
+  .badge.r-miss{ background:rgba(255,100,114,.16); border-color:var(--bad); color:#ffb0b8; }   /* miss / wrong (red) */
 
   #seek{ flex:0 0 auto; height:8px; background:#10161f; cursor:pointer; position:relative; transition:height var(--ease); }
   #seek:hover,#seek:focus-visible{ height:12px; }
@@ -95,15 +96,17 @@
 
   #piano{ position:relative; flex:0 0 auto; height:clamp(120px,20vh,220px); background:#070a0e; border-top:1px solid var(--line); }
   /* flat fills, no gradients/shadows — 88 keys repaint on every note while playing (Pi hot path) */
+  /* no per-key CSS transition: 88 keys toggle classes every note on the Pi hot path — instant swap is cheaper AND feels more like a real key */
   .wk{ position:absolute; bottom:0; top:0; background:#eef1f4; border:1px solid #aeb6c0;
-       border-radius:0 0 6px 6px; transition:background .04s; }
+       border-radius:0 0 6px 6px; }
   .bk{ position:absolute; top:0; height:62%; background:#1a1f25; border:1px solid #000;
-       border-radius:0 0 5px 5px; z-index:2; transition:background .04s; }
+       border-radius:0 0 5px 5px; z-index:2; }
   .wk.oor{ background:#3b434e; border-color:#2c333c; } .bk.oor{ background:#0a0d11; }
   .wk.midc::after{ content:''; position:absolute; left:50%; bottom:6px; transform:translateX(-50%);
     width:7px; height:7px; border-radius:50%; background:var(--accent); }
   .wk.on{ background:#52d885; } .wk.wait{ background:#f5b942; }
   .bk.on{ background:#3f86f0; } .bk.wait{ background:#e0a52f; }
+  .wk.wrong{ background:#ff5a6a; } .bk.wrong{ background:#e0414f; }   /* wrong note flash (red) */
 
   /* ============================ menu / screens ============================ */
   #menu[hidden]{ display:none; }
@@ -181,6 +184,9 @@
   .field > .lab{ color:var(--txt); }
   .field select,.field .btn{ width:100%; text-align:left; }
   .hint{ font-size:15px; color:var(--txt2); margin:8px 0 0; line-height:1.45; }
+  .hint.empty{ cursor:pointer; padding:28px; margin:8px; text-align:center; border:1px dashed var(--line2);
+    border-radius:var(--r2); color:var(--txt2); font-size:18px; }
+  .hint.empty:hover{ background:var(--surface); color:var(--txt); }
   #modeHint{ margin:8px 0 0; }
   details.adv{ background:var(--surface); border:1px solid var(--line); border-radius:var(--r3); padding:4px 24px; margin-bottom:16px; }
   details.adv > summary{ cursor:pointer; color:var(--dim); font-size:12px; letter-spacing:.12em; text-transform:uppercase;
@@ -224,6 +230,19 @@
   .ov-opts select{ min-width:180px; }
   .ov-btns{ display:flex; gap:14px; flex-wrap:wrap; justify-content:center; }
   #pQuit{ color:#f0a3a3; }
+
+  /* ---- narrow / portrait (held tablet): stack the library + single-column fields ---- */
+  @media (max-width:860px){
+    #screenSongs{ flex-direction:column; }
+    .rail{ flex:0 0 auto; flex-direction:row; align-items:center; overflow-x:auto; overflow-y:hidden;
+      border-right:none; border-bottom:1px solid var(--line); padding:12px; }
+    .rail h2{ display:none; }
+    .gtab{ white-space:nowrap; }
+    #songList{ grid-template-columns:1fr; }
+    .field{ grid-template-columns:1fr; gap:8px; }
+    #transport{ padding:var(--sp2); }
+    #play{ min-width:120px; }
+  }
 </style>
 </head>
 <body>
@@ -234,7 +253,7 @@
       <span id="song" class="dim"></span>
       <span class="grow"></span>
       <span id="time" class="badge">0:00 / 0:00</span>
-      <span id="score" class="badge" title="Timing: early / good / late per note you play">Timing &mdash;</span>
+      <span id="score" class="badge" role="status" aria-live="assertive" title="Timing: early / good / late per note you play">Timing &mdash;</span>
       <span id="status" class="dot" title="connecting"></span>
     </header>
 
@@ -242,6 +261,7 @@
     <canvas id="fall"></canvas>
 
     <div id="transport">
+      <button id="quitStage" class="btn icon" title="Back to the song menu">&#8592;</button>
       <button id="play" class="btn primary">&#9654; Play</button>
       <button id="reset" class="btn icon" title="Back to start">&#8634;</button>
       <span class="grow"></span>
@@ -372,7 +392,7 @@
   <!-- ===================== overlays ===================== -->
   <div id="countin" class="overlay" hidden><span></span></div>
 
-  <div id="pause" class="overlay" hidden>
+  <div id="pause" class="overlay" hidden role="dialog" aria-modal="true" aria-label="Paused">
     <div class="ov-card">
       <div class="ov-title">&#9208; Paused</div>
       <div class="ov-btns"><button id="pResume" class="btn lg primary">&#9654; Resume</button></div>
@@ -389,7 +409,7 @@
     </div>
   </div>
 
-  <div id="finish" class="overlay" hidden>
+  <div id="finish" class="overlay" hidden role="dialog" aria-modal="true" aria-label="Song complete">
     <div class="ov-card">
       <div class="ov-title">&#127881; You played it!</div>
       <div id="finStars" class="stars"></div>

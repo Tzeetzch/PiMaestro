@@ -1,7 +1,8 @@
 /* PiTV rendering — keyboard, falling-notes (game), and notation (grand staff).
-   Thin view: it draws the position the Pi engine streams (setPos) and the view-model
-   the engine computed (note staff positions/accidentals are ported from PianoBooster's
-   StavePosition.cpp). It never recomputes timing or musical layout. */
+   Thin view: it runs a local rAF playback clock (advanced in frame()), corrected by the
+   Pi's throttled 'pos' heartbeat via correctNow(), and freezes at gates in Follow mode. It
+   renders the view-model the engine computed (note staff positions/accidentals are ported
+   from PianoBooster's StavePosition.cpp). It never recomputes timing or musical layout. */
 const PiTV = (function () {
   const LOW = 21, HIGH = 108, LOOKAHEAD = 3.5;
   const isBlack = n => [1, 3, 6, 8, 10].indexOf(((n % 12) + 12) % 12) !== -1;
@@ -45,6 +46,7 @@ const PiTV = (function () {
   }
   function setRange(lo, hi) { rangeLo = lo; rangeHi = hi; applyRange(); }
   function highlight(n, on) { const el = keys[n]; if (el) el.classList.toggle('on', on); }
+  function flashWrong(n) { const el = keys[n]; if (!el) return; el.classList.add('wrong'); setTimeout(() => el.classList.remove('wrong'), 350); }
 
   /* ---- shared playback state (set from the streamed position) ---- */
   let canvas, ctx, song = null, view = 'notation';
@@ -66,9 +68,11 @@ const PiTV = (function () {
   function resize() {
     if (!canvas) return;
     const cw = canvas.clientWidth, ch = canvas.clientHeight;
-    // R.5: cap the backing-store resolution on very large displays (e.g. 4K TVs) to save
-    // fill-rate — CSS stretches the smaller bitmap. Displays at/under 1080p are untouched.
-    const scale = Math.min(1, 1920 / Math.max(cw, 1), 1080 / Math.max(ch, 1));
+    // R.5: cap the backing store near 1080p to save fill-rate (CSS stretches the bitmap), but
+    // honour up to 2x device-pixel-ratio so a hi-DPI tablet renders crisp. The Pi/TV is DPR 1,
+    // so this leaves the Pi hot-path identical while sharpening handhelds.
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const scale = Math.min(dpr, 1920 / Math.max(cw, 1), 1080 / Math.max(ch, 1));
     canvas.width = Math.round(cw * scale);
     canvas.height = Math.round(ch * scale);
     dirty = true; staticDirty = true;
@@ -138,18 +142,22 @@ const PiTV = (function () {
   // channels the player covers (Set) -> the rest is hidden; null = show all (Listen).
   // hand ('R'/'L') optionally narrows to one hand of a single-channel part (the other dims).
   function setPlay(channels, hand) { playSet = channels ? new Set(channels) : null; playHand = (hand === 'R' || hand === 'L') ? hand : null; dirty = true; }
-  function setPos(t, isWaiting, want) { now = t; waiting = !!isWaiting; setWanted(want || []); dirty = true; }
   // Live keys the player presses -> drawn on the staff at the play line (PianoBooster behaviour).
   function setPlayed(n, on) { if (on) playedSet.add(n); else playedSet.delete(n); dirty = true; }
 
-  /* ---- R.4 local playback clock (only active in ?next mode; off = unchanged) ---- */
+  /* ---- R.4 local playback clock (always on; pos frames only correct it) ---- */
   let clockOn = false, clockPlaying = false, clockSpeed = 1, lastTs = null;
   let gateTimes = [], gatePtr = 0, freezeMode = false, lastFrozen = -1;
   function enableClock() { clockOn = true; }
   function setClock(playing, speed) { clockPlaying = !!playing; if (speed != null) clockSpeed = +speed || 1; if (!clockPlaying) lastTs = null; dirty = true; }
   function firstGateAtOrAfter(t) { let lo = 0, hi = gateTimes.length; while (lo < hi) { const m = (lo + hi) >> 1; if (gateTimes[m] < t - 1e-6) lo = m + 1; else hi = m; } return lo; }
   function setGates(times) { gateTimes = times || []; gatePtr = firstGateAtOrAfter(now); lastFrozen = -1; dirty = true; }
-  function clearGateUpto(gi) { if (gi != null && gi + 1 > gatePtr) { gatePtr = gi + 1; dirty = true; } }   // a verdict = that gate is done
+  // The Pi cleared gate `gi` — resume past it. Guard against a STALE index from a previous gate set
+  // (a part/hand change rebuilds gates): ignore a gi that points before `now`, so we never clamp backward.
+  function clearGateUpto(gi) {
+    if (gi == null || gi >= gateTimes.length) return;
+    if (gi + 1 > gatePtr && gateTimes[gi] >= now - 0.3) { gatePtr = gi + 1; dirty = true; }
+  }
   function setFreezeMode(on) { freezeMode = !!on; dirty = true; }
   // For the browser-sound scheduler: current clock + the next-gate ceiling (don't schedule backing past it).
   function clockState() { return { t: now, playing: clockPlaying, speed: clockSpeed, limit: (freezeMode && gatePtr < gateTimes.length) ? gateTimes[gatePtr] : Infinity }; }
@@ -218,9 +226,9 @@ const PiTV = (function () {
     // with the bar number — same reference the notation view shows.
     const bars = song.bars || [];
     ctx.font = '600 12px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-    for (let bi = 0; bi < bars.length; bi++) {
+    for (let bi = Math.max(0, nbound(bars, now)); bi < bars.length; bi++) {   // window: skip bars below/above
       const by = H - (bars[bi] - now) * pps;
-      if (by < -1 || by > H) continue;
+      if (by < -1) break;                                                     // higher bars are further up — done
       ctx.fillStyle = C_BARMK; ctx.fillRect(0, by, W, 1);
       ctx.fillStyle = C_NAME; ctx.fillText(String(bi + 1), 3, by + 2);
     }
@@ -430,23 +438,30 @@ const PiTV = (function () {
       // Bound the beat indices by the visible time window (inverse map of the lx window).
       const tLo = interp(aLx, aT, lxLo), tHi = interp(aLx, aT, lxHi);
       const jStart = Math.max(0, nbound(beats, tLo) - 1), jEnd = Math.min(beats.length - 1, nbound(beats, tHi));
+      // Collect line positions, then issue ONE stroke() per style — on the Pi-4 GPU each stroke()
+      // is a separate draw submission, so batching dozens of grid lines into ~3 paths is a big win.
+      const beatX = [], barmkX = [], barX = [], barNums = [];
       for (let j = jStart; j <= jEnd; j++) {
         const x = bx(interp(aT, aLx, beats[j]));
-        if (x >= scrollX && x <= endX) {              // tall counting line on EVERY beat
-          ctx.strokeStyle = (j % num === 0) ? C_BARMK : C_BEAT; ctx.lineWidth = Math.max(1, s);
-          ctx.beginPath(); ctx.moveTo(x, markTop); ctx.lineTo(x, markBot); ctx.stroke();
-        }
+        if (x >= scrollX && x <= endX) (j % num === 0 ? barmkX : beatX).push(x);   // counting line on every beat
         if (j % num === 0) {                          // bar line within the staves, slight lead
           const xb = x - 0.3 * ppb;
           if (xb < scrollX || xb > endX) continue;
-          ctx.strokeStyle = C_BAR; ctx.lineWidth = Math.max(1.4, 1.7 * s);
-          ctx.beginPath(); ctx.moveTo(xb, yOf('treble', 4)); ctx.lineTo(xb, yOf('treble', -4)); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(xb, yOf('bass', 4)); ctx.lineTo(xb, yOf('bass', -4)); ctx.stroke();
-          const barNo = Math.round(j / num) + 1;
-          ctx.fillStyle = C_BARNUM; ctx.font = '600 ' + (step * 1.25).toFixed(0) + 'px system-ui';
-          ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-          ctx.fillText(String(barNo), xb + 3 * s, trebleC - 6 * step);
+          barX.push(xb); barNums.push([xb, Math.round(j / num) + 1]);
         }
+      }
+      ctx.lineWidth = Math.max(1, s);
+      if (beatX.length) { ctx.strokeStyle = C_BEAT; ctx.beginPath(); for (const x of beatX) { ctx.moveTo(x, markTop); ctx.lineTo(x, markBot); } ctx.stroke(); }
+      if (barmkX.length) { ctx.strokeStyle = C_BARMK; ctx.beginPath(); for (const x of barmkX) { ctx.moveTo(x, markTop); ctx.lineTo(x, markBot); } ctx.stroke(); }
+      if (barX.length) {
+        ctx.strokeStyle = C_BAR; ctx.lineWidth = Math.max(1.4, 1.7 * s); ctx.beginPath();
+        for (const xb of barX) { ctx.moveTo(xb, yOf('treble', 4)); ctx.lineTo(xb, yOf('treble', -4)); ctx.moveTo(xb, yOf('bass', 4)); ctx.lineTo(xb, yOf('bass', -4)); }
+        ctx.stroke();
+      }
+      if (barNums.length) {
+        ctx.fillStyle = C_BARNUM; ctx.font = '600 ' + (step * 1.25).toFixed(0) + 'px system-ui';
+        ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        for (const bn of barNums) ctx.fillText(String(bn[1]), bn[0] + 3 * s, trebleC - 6 * step);
       }
       // now line
       ctx.strokeStyle = waiting ? C_WANT : C_NOW; ctx.lineWidth = 2;
@@ -530,7 +545,7 @@ const PiTV = (function () {
       if (lastTs != null) {
         let n = now + ((ts - lastTs) / 1000) * clockSpeed;
         if (freezeMode && gatePtr < gateTimes.length && n >= gateTimes[gatePtr]) n = gateTimes[gatePtr];
-        now = n; dirty = true;
+        if (n !== now) { now = n; dirty = true; }   // frozen at a gate? nothing moved — skip the repaint
       }
       lastTs = ts;
     } else lastTs = null;
@@ -538,6 +553,6 @@ const PiTV = (function () {
     if (ctx && dirty) { draw(); dirty = false; }
   }
 
-  return { buildKeyboard, highlight, attachCanvas, setSong, setPos, setPlayed, setView, setPlay, setRange, setLoop, setNames,
+  return { buildKeyboard, highlight, flashWrong, attachCanvas, setSong, setPlayed, setView, setPlay, setRange, setLoop, setNames,
            enableClock, setClock, setGates, clearGateUpto, setFreezeMode, correctNow, clockState };
 })();

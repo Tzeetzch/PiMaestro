@@ -89,7 +89,12 @@ def broadcast(obj):
             try:
                 q.put_nowait(data)
             except queue.Full:
-                pass
+                # A stalled client filled its queue. Drop the OLDEST frame (a stale pos) to make
+                # room for this one, so a discrete event (gate/rating/noteoff) isn't the casualty.
+                try:
+                    q.get_nowait(); q.put_nowait(data)
+                except (queue.Empty, queue.Full):
+                    pass
 
 
 # The single playback brain (one piano, one session). Streams state via broadcast().
@@ -329,11 +334,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
-        # R.4: a "next" client runs its own playback clock, so it only needs the position frame
-        # as a low-rate heartbeat. Throttle `pos` to ~4 Hz for it (always pass play/stop and seek
-        # jumps through promptly, and never touch the discrete events). Old clients: full stream.
-        nxt = (parse_qs(urlparse(self.path).query).get("next") or ["0"])[0] == "1"
-        last_pos, last_play, last_t = 0.0, None, None
+        # The client runs its own playback clock, so it only needs the position frame as a
+        # low-rate heartbeat. Throttle `pos` to ~4 Hz, but ALWAYS pass a frame that changed
+        # play-state, switched song (file), was tagged seek=True (seek/loop/reset/load), or
+        # jumped >0.5s — and never throttle discrete events (gate/rating/noteon/...).
+        last_pos, last_play, last_t, last_file, last_speed = 0.0, None, None, None, None
         q = queue.Queue(maxsize=2000)
         with clients_lock:
             clients.append(q)
@@ -344,14 +349,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             while True:
                 try:
                     data = q.get(timeout=15)
-                    if nxt and '"type": "pos"' in data[:24]:
-                        obj = json.loads(data)
-                        nowm, pl, t = time.monotonic(), obj.get("playing"), obj.get("t")
-                        jump = last_t is not None and t is not None and abs(t - last_t) > 0.5
-                        if (nowm - last_pos) < 0.25 and pl == last_play and not jump:
-                            last_t = t
-                            continue                 # throttle this position frame for the local-clock client
-                        last_pos, last_play, last_t = nowm, pl, t
+                    obj = json.loads(data)
+                    if obj.get("type") == "pos":
+                        nowm, pl, t, f, sp = time.monotonic(), obj.get("playing"), obj.get("t"), obj.get("file"), obj.get("speed")
+                        forced = (obj.get("seek") or pl != last_play or f != last_file or sp != last_speed
+                                  or (last_t is not None and t is not None and abs(t - last_t) > 0.5))
+                        if not forced and (nowm - last_pos) < 0.25:
+                            last_t, last_file = t, f      # track even when dropped, so jumps stay detectable
+                            continue                      # throttle this heartbeat for the local-clock client
+                        last_pos, last_play, last_t, last_file, last_speed = nowm, pl, t, f, sp
                     self.wfile.write(f"data: {data}\n\n".encode())
                 except queue.Empty:
                     self.wfile.write(b": keepalive\n\n")

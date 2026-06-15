@@ -13,10 +13,13 @@ A **Raspberry Pi 4 Model B (4GB)** wired to a TV, used as a **piano-learning sta
   bcm2835 headphone jack.
 - **Audio:** PipeWire + pipewire-pulse. `fluidsynth` runs as a software MIDI synth
   (ALSA seq client). Signal path: **MIDI keyboard → FluidSynth → HDMI/headphone audio**.
-- **App:** **Linthesia** — open-source falling-notes piano game (Synthesia clone), built
-  from source at `~/linthesia` (origin: github.com/linthesia/linthesia, meson build under
-  `~/linthesia/build`). MIDI songs live in `~/linthesia/music` and `~/Music`.
-- **Boot:** No autostart yet — Linthesia is launched manually, not on boot.
+- **App:** **PiMaestro** (`~/webpiano`, repo github.com/Tzeetzch/PiMaestro, GPLv3 derivative of
+  PianoBooster). A headless Python engine parses the MIDI, runs the "Follow-You" conductor, makes
+  sound via FluidSynth, and serves a web app (HTML/canvas/JS + SSE) on `:8080`; the browser on the
+  TV (HDMI + CEC remote) or a tablet is a thin view. Run with `cd ~/webpiano && python3 server.py`;
+  deploy from this PC with `deploy.ps1`. MIDI songs live in `~/linthesia/music` and `~/Music`.
+  (Linthesia, an older Synthesia clone at `~/linthesia`, is the predecessor — no longer the app.)
+- **Boot:** No autostart yet — launched manually (PiTV-Start / PiTV-Open desktop shortcuts).
 
 > The local `C:\Dev\PiTV` folder holds project meta (this file, scripts, docs). The actual
 > running system lives on the Pi — investigate it over SSH, don't assume.

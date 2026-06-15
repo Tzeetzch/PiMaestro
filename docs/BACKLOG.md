@@ -55,15 +55,18 @@ Dev access while away: the laptop reaches the Pi via ProxyJump `ssh -J peter@100
   gate (`gi`); the SSE `pos` is throttled to ~4 Hz per `?next` client (verified 120→13); the browser runs
   a local rAF clock corrected by that heartbeat (gentle slew, snap on jump), freezes at gates, resumes when
   the **Pi's authoritative `t` passes the gate** (this killed the early-hold overshoot/jitter — a0f1530),
-  optimistic instant pause. Browser sound (`?next` only) = WebAudioTinySynth (`vendor/webaudio-tinysynth.js`)
-  scheduled from the VM + live notes; "Mute Pi" toggle (FluidSynth `gain 0`). Old non-`?next` path still works.
+  optimistic instant pause. Browser sound = WebAudioTinySynth (`vendor/webaudio-tinysynth.js`)
+  scheduled from the VM + live notes; "Mute Pi" toggle (FluidSynth `gain 0`).
+  **2026-06-15 follow-up:** R.4 is now the ONLY render path — the `?next=1` flag and the old 40 Hz
+  server-clock fallback were removed (app.js `NEXT` guards unwrapped, server always throttles `pos`,
+  kiosk opens plain `/`). One path, no toggle.
 - **UI rebuilt home-first** (the big one — earlier stage-first/overlay model was wrong): one `go(view)` router,
   ONE view at a time, ROOTED AT HOME (Home → Library → Setup → Stage; Back goes up; the Stage is a view you
   Play into / Quit out of — no "menu over stage", no Close-to-stage). Real design system (tokens, cards,
   components via an `h()` DOM helper + `gtab`/`songItem`). Pause screen on Stop (quick no-reload tweaks +
   Quit). See memory [[ui-build-home-first]].
 - **Pi-4 performance:** removed `backdrop-filter` + per-key gradients/shadows (88 keys repaint per note);
-  flat fills. Kiosk on the light `?next` renderer.
+  flat fills. Kiosk on the light local-clock renderer.
 - **Sound:** `AUTO_GAIN=0.6` (backing sits under the player's keys) + **per-instrument volume sliders**
   (CC7 via `cmd:part {volume}`) in the Instruments panel. `EARLY_WINDOW` kept at **0.30** (the early-clear
   was the FE gate bug, now fixed — do NOT shorten it).
@@ -72,7 +75,53 @@ Dev access while away: the laptop reaches the Pi via ProxyJump `ssh -J peter@100
 
 **Open / next:** push the ~22 commits to GitHub; let Peter sign off Follow-resume + played-keys-on-staff +
 sound balance on the TV; maybe relax `AUTO_GAIN` toward 1.0 now that per-instrument volume exists; persist
-per-song instrument volume/program (currently live-only); consider making `?next` the default.
+per-song instrument volume/program (currently live-only).
+
+---
+
+## Built 2026-06-15 (later) — 12-lens review + adversarial bug-hunt, all findings fixed
+Ran a workflow: 12 specialist reviewers + a 3-surface bug hunt; 13 bugs survived skeptic verification.
+Fixed across engine/transport/frontend/parser/docs (deployed; verified server-side on the Pi):
+
+- **Gate window (the big one):** `_fresh()` no longer decays satisfied gate-notes by wall-clock — it
+  LATCHES them until the gate advances. Fixes slow-practice re-freeze (a correct early press at 0.5x no
+  longer evaporates before the line) and the wide-chord freeze (spread a chord >0.45s and it still clears).
+  `EARLY_WINDOW` (song-time) still blocks way-too-early presses. `CHORD_WINDOW` is now scoring-only.
+- **Freeze cursor split from scoring cursor:** the Pi emits a dedicated `gate {gi}` event from
+  `_advance_gates` (the freeze cursor); `rating` is now feedback-only. No more cursor divergence / scroll-past.
+- **Wrong-note feedback:** a key that isn't part of the chord you owe flashes red + a `wrong` tally;
+  scoring is mode-aware (Follow rewards correctness, penalises wrong/miss; Play-along grades timing; Listen
+  shows a neutral finish, not 3 gold stars). Best-stars now persist on the Pi (follow the song to any client).
+- **Transport / multi-client:** pos throttle branches on parsed `type` (not a byte-prefix sniff), carries
+  `speed`, and force-passes `seek`-tagged / file-change frames (seek, loop-wrap, reset, load no longer get
+  dropped). `hello` carries `pi_muted` + adopts a loaded-but-paused song so a 2nd client's transport works.
+- **Audio:** master gain pinned to `MASTER_GAIN` on load (no first-mute jump); Pi-mute stored + in `hello`;
+  `_Synth` caches gain/router/program/CC7 and **replays on FluidSynth reconnect**; Listen mode isn't ducked.
+- **Parser:** meter-change-aware bar/beat grid (was: only the first time-sig); global cross-track note
+  pairing; graceful VLQ-overflow + System-Common (0xF1–F3) handling; 8000-line grid cap removed.
+- **Pi-4 perf:** batched notation grid strokes (dozens of `stroke()` → ~3/frame); windowed game bar loop;
+  no repaint while frozen at a gate; browser-sound scheduler runs only while playing; up-to-2x DPR for tablets.
+- **A11y/UX:** 2-D D-pad nav for the song grid; track sliders/checkboxes focusable (L/R adjusts volume);
+  visible Back/Quit on the Stage; finish-screen Back → Library; count-in hidden on every stop; Play = first
+  focus on Setup; `role=dialog`/`aria-live`; "Pause" label; empty-library CTA.
+- **Docs/cleanup:** dead `setPos` removed; `CLAUDE.md` → PiMaestro (was Linthesia); ARCHITECTURE rewritten
+  (browser sound is live; full SSE taxonomy) and the duplicate root doc consolidated to a pointer; orphan
+  `webpiano/index.html` deleted; `webaudio-tinysynth.js` vendored into the repo; dead vendor libs removed.
+
+**Deferred (judged low-value/feature-scope):** loop controls inside the pause overlay; the binary-search
+helper dedup.
+
+**Diff-review round (same day):** ran a 2nd workflow — an adversarial REGRESSION review of the uncommitted
+diff (9 surface reviewers + 2 interaction hunters, every finding skeptic-verified). 21 reported, 10 confirmed,
+11 refuted. Fixed all 10: **(high)** `set_play` now broadcasts `gates` so a pause→change-hand→resume doesn't
+freeze the local clock on stale gate times; **(med)** wrong-note now fires only for a key with NO note in the
+music near now (spares the other hand / backing / read-ahead, still catches a true wrong key like C#-for-C);
+plus lows — `num=0` time-sig no longer kills the bar grid, System Common bytes clear running status,
+cross-track note pairing prefers the same track, speed changes are in the throttle force-pass, the empty-CTA
+tile is D-pad reachable, `clearGateUpto` ignores a stale gate index, and dead `CHORD_WINDOW` removed. Verified
+on the Pi (latch still clears, gates broadcast, other-hand spared, wrong key caught, 210/210 songs parse).
+
+**Open:** Peter to sign off on the TV.
 
 ---
 

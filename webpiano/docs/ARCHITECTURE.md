@@ -49,35 +49,46 @@ display-only mapping for live-pressed keys, which has no bearing on scoring).
 
 ## SSE frame taxonomy
 
-The server broadcasts these to every client. The queue **drops on overflow** (`queue.Full`) — so:
+The server broadcasts these to every client. `pos` is **throttled to ~4 Hz per client** in `server.py`
+(the local-clock browser only needs a heartbeat); a frame is always forwarded when `playing` changed, the
+`file` changed, it is tagged `seek` (a jump), or `t` moved >0.5s. Discrete events are never throttled. On
+queue overflow the **oldest** frame is dropped (a stale `pos`), so discrete events survive.
 
-- `pos` — **idempotent snapshot** (`t`, `file`, `playing`, `waiting`, `wanted[]`, `timing`, `ended?`).
-  A dropped `pos` self-heals on the next tick. Carries `file` so a stale client can detect another client
-  switched songs and reconnect for a fresh `hello`.
-- `hello` — full snapshot sent once on connect: a `pos` plus `vm`, `file`, and the authoritative
-  `play`/`hand`/`mode`/`speed`. A reconnecting or second client adopts this so it matches the engine
-  instead of resetting to defaults.
-- `noteon`/`noteoff` — the player's live keys, for the on-screen keyboard highlight and the
-  played-keys-on-the-staff overlay (display only — these do NOT make sound).
-- `rating` — instant early/good/late feedback per chord.
+- `pos` — **idempotent heartbeat** (`t`, `file`, `playing`, `speed`, `waiting`, `wanted[]`, `timing`,
+  `pi_muted?`, `ended?`, `seek?`). A dropped `pos` self-heals on the next tick. `file` lets a stale client
+  detect another client switched songs and reconnect; `speed` keeps a 2nd client's local clock in sync.
+- `hello` — full snapshot on connect: a `pos` plus `vm`, `file`, and the authoritative
+  `play`/`hand`/`mode`/`speed`/`pi_muted`/`gates`. A reconnecting or 2nd client adopts this; if the Pi has
+  a song loaded but paused, the client adopts the model (so the transport works) but stays on Home.
+- `gate` — `{gi}`: gate `gi` was satisfied. The local-clock browser unfreezes at this gate. This is a
+  position signal, separate from scoring, so the freeze cursor and the rating cursor can't diverge.
+- `rating` — per-chord feedback `{kind, off, gate, gi}`, `kind` ∈ early/good/late/miss/**wrong**. Display
+  only (badge flash; a `wrong` flashes the mis-pressed key red). Does NOT drive the clock.
+- `gates` — `{gates[]}`: the gate-time set changed (part/range/mode). (A song *load* ships gates in the VM
+  and other clients reconnect, so load does not broadcast `gates`.)
+- `noteon`/`noteoff` — the player's live keys, for the keyboard highlight and the played-keys-on-staff
+  overlay. (Display + optional browser sound; see below.)
 
 ## Sound
 
-**The Pi is the only sound source, for every mode (playing, game, listening).** It plays out the
-HDMI (TV) or the headphone jack. The web app is display + remote control — **it makes no sound** (no
-in-browser synthesis, no audio streaming). This is deliberate: the player always hears the Pi locally,
-so the browser never needs to.
-
+**The Pi is the primary sound source** for every mode. It plays out HDMI (TV) or the headphone jack:
 - **Live keys** go keyboard→ALSA→FluidSynth (no web round-trip): latency is synth+buffer only.
   Accompaniment is sent over FluidSynth's TCP command server (:9800).
 - **In-engine transpose:** notes can be shown shifted to fit a small keyboard while sounding at original
   pitch — the FluidSynth MIDI router transposes the keyboard down by the shift, and the conductor
   de-transposes TCP accompaniment to match. Zero added latency. (`_Synth.transpose`, `_service_auto`.)
-- **Non-blocking synth client:** `_Synth` queues commands to a background worker thread that does the
-  blocking socket I/O, so a stalled/absent FluidSynth never blocks the conductor's live-MIDI matching.
-- If a far-from-the-Pi device ever needs to hear a demo, the right approach is to stream the Pi's audio
-  output (ffmpeg from the PipeWire sink monitor → an `<audio>` element) — latency is fine for passive
-  listening. Not built; intentionally left out until the need is real.
+- **Master gain** is pinned to `MASTER_GAIN` on load (so it never jumps); "Mute Pi" sets it to 0. The
+  mute state is stored on the conductor, shipped in `hello`, and re-applied on load.
+- **Non-blocking + self-healing synth client:** `_Synth` queues commands to a background worker that does
+  the blocking socket I/O, so a stalled/absent FluidSynth never blocks live-MIDI matching. It caches
+  connection state (gain, router-transpose, per-channel program + CC7 volume) and **replays it on
+  reconnect**, so a FluidSynth restart doesn't silently revert instruments/volume/transpose.
+
+**Optional in-browser sound (R.4):** a device that can't hear the Pi (a tablet across the room) can turn
+on "Play sound on this device" — `web/app.js` loads `vendor/webaudio-tinysynth.js` and schedules the
+backing from the VM on the local clock (held at the next gate in Follow), sonifying live keys from the
+`noteon`/`noteoff` stream. It is **off by default** and paired with "Mute Pi". The scheduler runs only
+while playing. The Pi stays the authority; this is purely a local speaker.
 
 ## State ownership / sessions
 
@@ -89,7 +100,8 @@ deliberate (a TV + a parent's tablet drive one song). True multi-session would b
 
 - Per-song settings (part/hand/mode/speed/octave/split) live on the Pi keyed by realpath
   (`~/.config/pitv/song-settings.json`, merge semantics) so they follow the song to any client.
-- Library (favorites, recently-played) is separate; best-stars are client-local (localStorage) for now.
+- Library (favorites, recently-played, **best-stars**) lives on the Pi too (same per-song store), so star
+  badges and progress follow the song to any client.
 
 ## Known follow-ups (from the review panel)
 

@@ -5,7 +5,7 @@
 
   Usage:
     ./deploy.ps1            # sync code, restart server, smoke test
-    ./deploy.ps1 -Vendor    # also sync vendor/ (wafplayer.js, piano.js)
+    ./deploy.ps1 -Vendor    # also sync vendor/ (webaudio-tinysynth.js — browser sound)
     ./deploy.ps1 -NoRestart # sync only, don't restart the server
 #>
 param(

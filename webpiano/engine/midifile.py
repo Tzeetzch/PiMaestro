@@ -64,11 +64,14 @@ class _Reader:
     def varlen(self) -> int:
         """MIDI variable-length quantity (max 4 bytes)."""
         value = 0
+        c = 0x80
         for _ in range(4):
             c = self.byte()
             value = (value << 7) | (c & 0x7F)
             if not (c & 0x80):
                 break
+        if c & 0x80:        # a 4-byte VLQ whose last byte still continues = corrupt from here;
+            raise EOFError("variable-length quantity too long")   # bail cleanly (keep events so far)
         return value
 
 
@@ -131,6 +134,12 @@ def _parse_track(data: bytes, start: int, end: int):
         elif status in (0xF0, 0xF7):  # sysex — consume declared length
             r.take(r.varlen())
             running = 0
+        elif status == 0xF2:          # song position pointer — 2 data bytes (don't abort the track)
+            r.byte(); r.byte(); running = 0      # System Common cancels running status (per spec)
+        elif status in (0xF1, 0xF3):  # MTC quarter-frame / song select — 1 data byte
+            r.byte(); running = 0
+        elif status in (0xF6, 0xF8, 0xFA, 0xFB, 0xFC, 0xFE):  # tune-request / realtime — no data
+            pass
         else:
             # unknown/unsynced status. A stray data byte with no running status is junk —
             # skip one byte and try to resync instead of abandoning the rest of the track.
