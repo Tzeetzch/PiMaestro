@@ -21,12 +21,13 @@
     for (const kid of kids.flat()) if (kid != null) e.append(kid.nodeType ? kid : document.createTextNode(kid));
     return e;
   }
+  function fmtTime(s) { s = Math.max(0, s | 0); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
   const statusEl = $('status'),
         playBtn = $('play'), resetBtn = $('reset'),
         viewBtn = $('view'), songLabel = $('song'),
         handSel = $('handSel'), modeSel = $('modeSel'), instrPanel = $('instrPanel'),
         speedSel = $('speedSel'), kbdSel = $('kbdSel'), transSel = $('transSel'),
-        loopPanel = $('loopPanel'), scoreEl = $('score'),
+        loopPanel = $('loopPanel'), scoreEl = $('score'), timeEl = $('time'),
         seekEl = $('seek'), seekFill = $('seekfill'), namesBtn = $('names'),
         stage = $('stage'), menu = $('menu'), menuClose = $('menuClose'), startBtn = $('startBtn'),
         favBtn = $('fav'), uploadBtn = $('uploadBtn'), fileInput = $('fileInput'), splitSel = $('splitSel'),
@@ -233,7 +234,13 @@
       onclick: () => { currentGroup = g; buildGroupTabs(); } },
       h('span', null, g), h('span', { class: 'count' }, String(songsForGroup(g).length)));
   }
-  function coverGlyph(s) { return (s.title && s.title.trim()) ? s.title.trim()[0].toUpperCase() : '♫'; }
+  function coverGlyph(s) { const t = (s.title || '').trim(); return t ? t[0].toUpperCase() : '♫'; }
+  // Derive a stable hue per title so the grid has rhythm instead of a wall of identical tiles.
+  function coverBg(title) {
+    let hsh = 0; const t = title || '';
+    for (let i = 0; i < t.length; i++) hsh = (hsh * 31 + t.charCodeAt(i)) % 360;
+    return 'linear-gradient(135deg, hsl(' + hsh + ' 58% 52%), hsl(' + ((hsh + 42) % 360) + ' 56% 38%))';
+  }
   function songItem(s) {
     const meta = [];
     if (lib[s.file] && lib[s.file].fav) meta.push(h('span', { class: 'si-fav' }, '★'));
@@ -242,7 +249,7 @@
     meta.push(h('span', null, s.group));
     return h('li', { class: 'songitem' + (s.file === selFile ? ' on' : ''), tabIndex: 0,
       onclick: () => selectSong(s.file) },
-      h('span', { class: 'cover' }, coverGlyph(s)),
+      h('span', { class: 'cover', style: 'background:' + coverBg(s.title) }, coverGlyph(s)),
       h('span', { class: 'si-main' },
         h('div', { class: 'si-title' }, s.title),
         h('div', { class: 'si-meta' }, ...meta)));
@@ -267,7 +274,8 @@
   function fillSetupHead() {
     if (!currentVM) return;
     $('setupTitle').textContent = currentVM.title || '—';
-    const cv = document.querySelector('.setup-hero .cover'); if (cv) cv.textContent = coverGlyph(currentVM);
+    const cv = document.querySelector('.setup-hero .cover');
+    if (cv) { cv.textContent = coverGlyph(currentVM); cv.style.background = coverBg(currentVM.title); }
     const shift = currentVM.transpose || 0;
     const stag = shift ? ' · ' + (shift > 0 ? '+' : '') + (shift / 12) + ' oct' : '';
     $('setupSub').textContent = currentVM.notes.length + ' notes' + stag;
@@ -800,7 +808,10 @@
         else if (!countin.hidden) countin.hidden = true;
         const d = currentVM ? currentVM.duration : 0;
         const pct = d > 0 ? Math.max(0, Math.min(100, m.t / d * 100)) : 0;
-        if (Math.abs(pct - lastPct) >= 0.2) { seekFill.style.width = pct + '%'; seekEl.setAttribute('aria-valuenow', Math.round(pct)); lastPct = pct; }
+        if (Math.abs(pct - lastPct) >= 0.2) {
+          seekFill.style.width = pct + '%'; seekEl.setAttribute('aria-valuenow', Math.round(pct));
+          timeEl.textContent = fmtTime(m.t) + ' / ' + fmtTime(d); lastPct = pct;
+        }
         timingTally = m.timing;
         const tk = m.timing ? (m.timing.good + ',' + m.timing.late + ',' + m.timing.early + ',' + m.timing.miss + ',' + m.timing.on) : '';
         if (!flashing && tk !== lastTallyKey) { showTiming(); lastTallyKey = tk; }   // only repaint when it changes
