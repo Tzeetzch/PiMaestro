@@ -75,7 +75,7 @@ const PiTV = (function () {
   }
   function setSong(vm) {
     song = vm; now = -LOOKAHEAD; setWanted([]); dirty = true; staticDirty = true;
-    gateTimes = []; gatePtr = 0; lastFrozen = -1;   // R.4: gates re-arrive via the 'gates' event
+    gateTimes = (vm && vm.gates) || []; gatePtr = firstGateAtOrAfter(now); lastFrozen = -1;   // R.4: gates ship in the VM
     // precompute static per-note layout ONCE (was recomputed every frame): musical-beat
     // position, and the top note of each chord (for the note-name label).
     const beats = vm.beats || [];

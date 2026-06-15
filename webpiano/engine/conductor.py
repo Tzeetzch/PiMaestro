@@ -149,6 +149,7 @@ class Conductor:
                 self._play = set(c for c in (vm.get("rightChan"), vm.get("leftChan")) if c is not None)
             self._muted = set()
             self._rebuild_gates()
+            vm["gates"] = [round(t, 3) for t, _ in self._gates]   # ship gates IN the load response (no SSE race)
             self._reset_position()
             self._playing = False
             # SOUND at the song's ORIGINAL pitch even when the notes are shown shifted to fit

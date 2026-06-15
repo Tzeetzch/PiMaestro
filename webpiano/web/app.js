@@ -13,7 +13,7 @@
         seekEl = $('seek'), seekFill = $('seekfill'), namesBtn = $('names'),
         menuBtn = $('menuBtn'), menu = $('menu'), menuClose = $('menuClose'), startBtn = $('startBtn'),
         favBtn = $('fav'), uploadBtn = $('uploadBtn'), fileInput = $('fileInput'), splitSel = $('splitSel'),
-        menuBack = $('menuBack'), menuTitle = $('menuTitle'), groupTabs = $('groupTabs'), songList = $('songList'),
+        menuBack = $('menuBack'), menuHome = $('menuHome'), menuTitle = $('menuTitle'), groupTabs = $('groupTabs'), songList = $('songList'),
         splitField = $('splitField'), modeHint = $('modeHint'),
         finish = $('finish'), finStars = $('finStars'), finSub = $('finSub'), finAgain = $('finAgain'), finPick = $('finPick'),
         countin = $('countin');
@@ -33,6 +33,7 @@
     }
     menuTitle.textContent = TITLES[name] || '';
     menuBack.hidden = (name === 'home');
+    menuHome.hidden = (name === 'home');            // explicit Home from anywhere
     menuClose.hidden = !loadedFile;                 // can only return to a game once a song is loaded
     if (kbd) setTimeout(() => focusFirst(), 0);     // land the remote's focus on this screen
   }
@@ -42,6 +43,7 @@
   menuBtn.onclick = () => { if (menu.hidden) openMenu(); else closeMenu(); };
   menuClose.onclick = closeMenu;
   menuBack.onclick = () => { showScreen(screen === 'setup' ? 'songs' : 'home'); };
+  menuHome.onclick = () => { showScreen('home'); };
   $('homeStart').onclick = () => showScreen('songs');
   $('homeSettings').onclick = () => showScreen('settings');
   startBtn.innerHTML = '&#9654; Play now';                 // distinct verb from Home "Start" (which just browses)
