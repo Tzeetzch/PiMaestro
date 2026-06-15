@@ -284,7 +284,7 @@
     <section id="screenSettings" class="screen" hidden>
       <div class="menu-body">
         <div class="sect">
-          <h3>Display &amp; sound</h3>
+          <h3>Display</h3>
           <div class="field"><span>Note-name labels</span><button id="names" class="btn">Names: on</button></div>
           <div class="field"><span>Keyboard size</span>
             <select id="kbdSel" title="Match your keyboard; other keys are dimmed">
@@ -293,8 +293,7 @@
               <option value="37">37 keys</option><option value="25">25 keys</option>
             </select>
           </div>
-          <div class="field"><span>Sound on this device</span><button id="sound" class="btn">&#128266; Off</button></div>
-          <p class="hint">On the Pi/TV the sound comes from the Pi itself &mdash; leave this off. Turn it on for a tablet or laptop.</p>
+          <p class="hint">Sound comes from the Pi itself (HDMI / headphone jack) &mdash; this screen is display only.</p>
         </div>
       </div>
     </section>
@@ -312,8 +311,6 @@
     </div>
   </div>
 
-  <script src="vendor/wafplayer.js"></script>
-  <script src="vendor/piano.js"></script>
   <script src="render.js"></script>
   <script src="app.js"></script>
 </body>

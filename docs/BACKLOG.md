@@ -63,7 +63,18 @@ drops drums (were piano); FluidSynth light room reverb + gain 0.4. **Bigger dire
       thread (single FIFO worker); broadcast already non-blocking. Verified on Pi.
 - [x] **Audiophile** — accompaniment uses real velocities (AUTO_VEL fallback 80→90); FluidSynth
       `synth.gain` 0.4→0.7 on the Pi (dense passages were timid on TV speakers). Remaining:
-      optional dedicated piano SF; forward sustain (CC64); per-GM-program WebAudioFont bank (browser).
+      optional dedicated piano SF; forward sustain (CC64).
+
+## Browser audio removed entirely (2026-06-15)
+Decision: the **Pi is the only sound source** for every mode — playing, game, and listening all use the
+Pi's FluidSynth out the HDMI / headphone jack; the web app is display + remote only and makes NO sound.
+WebAudioFont caused lag on dense songs (CPU synthesis) and never matched the Pi's tone; the only thing it
+bought (hearing on a remote device) isn't how PiMaestro is used. Removed: `vendor/wafplayer.js` +
+`piano.js` (~850 KB off every page load), all WebAudioFont code, the `autoon`/`autooff`/`alloff` SSE
+emission, and the short-lived `wants_sound`/gating experiment. Kept: FluidSynth (unchanged) and
+`noteon`/`noteoff` (drive the keyboard highlight + played-keys-on-the-staff — display only).
+If a far-room demo speaker is ever wanted, stream the Pi's audio (ffmpeg → `<audio>`); ~an afternoon,
+ffmpeg is already on the Pi. (The unused `vendor/*.js` still sit on the Pi; harmless, can be deleted.)
 
 ## Review pass 2 (2026-06-14) — 6-reviewer panel on the wizard menu + whole app
 Fixed batch (deployed): **menu wizard** (Home → Song picker w/ category tabs + list → per-song Setup

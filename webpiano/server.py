@@ -42,11 +42,6 @@ UPLOAD_DIR = os.path.realpath(os.path.expanduser("~/Music/Uploads"))
 
 clients = []
 clients_lock = threading.Lock()
-# Connection ids of clients that want browser sound. The accompaniment mirror events
-# (autoon/autooff/alloff) exist ONLY to drive WebAudioFont in a browser; when nobody wants
-# sound we don't put them on the wire at all (a dense/fast song floods them otherwise).
-sound_cids = set()
-SOUND_EVENTS = ("autoon", "autooff", "alloff")
 
 # Per-song settings (part/speed/octave/mode) live on the Pi so they follow the song to any
 # client. Keyed by the song's file path.
@@ -88,12 +83,6 @@ CTYPES = {"html": "text/html; charset=utf-8", "js": "application/javascript",
 
 # ---------------------------------------------------------------- MIDI input (SSE)
 def broadcast(obj):
-    # Drop browser-sound mirror events when no connected client wants sound — the Pi still
-    # makes its own sound via FluidSynth; this only skips the (potentially huge) wire traffic.
-    if isinstance(obj, dict) and obj.get("type") in SOUND_EVENTS:
-        with clients_lock:
-            if not sound_cids:
-                return
     data = json.dumps(obj)
     with clients_lock:
         for q in list(clients):
@@ -260,12 +249,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({"ok": True})
         elif cmd == "part":
             conductor.set_part(req.get("ch"), req.get("mute"), req.get("program")); self._json({"ok": True})
-        elif cmd == "wants_sound":                          # client toggling its local WebAudioFont
-            cid = str(req.get("cid") or "")
-            if cid:
-                with clients_lock:
-                    sound_cids.add(cid) if req.get("on") else sound_cids.discard(cid)
-            self._json({"ok": True})
         else:
             self.send_error(400, "unknown cmd")
 
@@ -344,7 +327,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
-        cid = (parse_qs(urlparse(self.path).query).get("cid") or [""])[0]
         q = queue.Queue(maxsize=2000)
         with clients_lock:
             clients.append(q)
@@ -365,8 +347,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with clients_lock:
                 if q in clients:
                     clients.remove(q)
-                if cid:
-                    sound_cids.discard(cid)      # connection gone -> it no longer wants sound
 
 
 class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):

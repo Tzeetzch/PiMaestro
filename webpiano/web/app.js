@@ -5,7 +5,7 @@
   const $ = id => document.getElementById(id);
   const statusEl = $('status'),
         playBtn = $('play'), resetBtn = $('reset'),
-        viewBtn = $('view'), soundBtn = $('sound'), songLabel = $('song'),
+        viewBtn = $('view'), songLabel = $('song'),
         handSel = $('handSel'), modeSel = $('modeSel'), instrPanel = $('instrPanel'),
         speedSel = $('speedSel'), kbdSel = $('kbdSel'), transSel = $('transSel'),
         loopPanel = $('loopPanel'), scoreEl = $('score'),
@@ -16,10 +16,6 @@
         splitField = $('splitField'), modeHint = $('modeHint'),
         finish = $('finish'), finStars = $('finStars'), finSub = $('finSub'), finAgain = $('finAgain'), finPick = $('finPick'),
         countin = $('countin');
-
-  // Per-page connection id, so the Pi can tell whether THIS client wants browser sound
-  // (it only streams accompaniment audio events when at least one client does).
-  const CID = 'c' + Math.random().toString(36).slice(2) + Date.now().toString(36);
 
   /* ---- multi-screen menu: home -> song picker -> per-song setup -> game; settings off home ---- */
   const SCREENS = { home: 'screenHome', songs: 'screenSongs', setup: 'screenSetup', settings: 'screenSettings' };
@@ -512,51 +508,8 @@
   applyNames();
   namesBtn.onclick = () => { names = !names; localStorage.setItem('pitv.names', names ? 'on' : 'off'); applyNames(); };
 
-  /* ---- local browser sound (self-hosted WebAudioFont) ---- */
-  let actx = null, player = null, preset = null, soundOn = false;
-  const envs = {}, autoEnvs = {};      // live-key voices / accompaniment voices (kept apart)
-  soundBtn.onclick = async () => {
-    try {
-      if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
-      if (actx.state === 'suspended') await actx.resume();
-      if (!player) {
-        player = new WebAudioFontPlayer();
-        preset = _tone_0000_Aspirin_sf2_file;
-        player.loader.decodeAfterLoading(actx, '_tone_0000_Aspirin_sf2_file');
-      }
-      soundOn = !soundOn;
-      soundBtn.classList.toggle('on', soundOn);
-      soundBtn.innerHTML = soundOn ? '&#128266; On' : '&#128266; Off';
-      control({ cmd: 'wants_sound', cid: CID, on: soundOn }).catch(() => {});   // gate the Pi's audio stream
-    } catch (e) { soundBtn.textContent = 'sound error'; }
-  };
-  // WebAudioFont schedules nodes per voice; too many at once make a weak browser choke. Cap and
-  // steal the oldest so it degrades gracefully. Live keys and accompaniment have SEPARATE pools so
-  // sustained backing can never steal the player's own just-pressed key. Each voice is scheduled
-  // with a bounded length, so a dropped note-off self-releases instead of ringing forever.
-  const LIVE_MAX = 12, AUTO_MAX = 18, MAX_LEN = 8, RELEASE = 0.08;
-  const liveOrder = [], autoOrder = [];
-  function poolFor(map) { return map === envs ? liveOrder : autoOrder; }
-  function endVoice(map, n, when) {
-    if (map[n]) { try { map[n].cancel(when != null ? when : actx.currentTime + RELEASE); } catch (e) {} delete map[n]; }
-  }
-  function play1(map, n, vel, cap) {
-    if (!soundOn || !player) return;
-    const order = poolFor(map);
-    if (map[n]) { try { map[n].cancel(); } catch (e) {} const i = order.indexOf(n); if (i >= 0) order.splice(i, 1); }
-    while (order.length >= cap) endVoice(map, order.shift(), actx.currentTime);   // steal oldest in THIS pool only
-    map[n] = player.queueWaveTable(actx, actx.destination, preset, actx.currentTime, n, MAX_LEN, Math.max(0.2, vel / 127));
-    order.push(n);
-  }
-  function stop1(map, n) {
-    endVoice(map, n);                  // brief release tail instead of a hard click
-    const order = poolFor(map); const i = order.indexOf(n); if (i >= 0) order.splice(i, 1);
-  }
-  function synthOn(n, vel) { play1(envs, n, vel, LIVE_MAX); }
-  function synthOff(n) { stop1(envs, n); }
-  function synthAutoOn(n, vel) { play1(autoEnvs, n, vel, AUTO_MAX); }   // accompaniment from the engine
-  function synthAutoOff(n) { stop1(autoEnvs, n); }
-  function synthAllOff() { for (const m of [envs, autoEnvs]) for (const n in m) { try { m[n].cancel(); } catch (e) {} delete m[n]; } liveOrder.length = 0; autoOrder.length = 0; }
+  /* Sound is the Pi's job (FluidSynth -> HDMI / headphone jack), for every mode. The web app
+     is display + remote only; it makes no sound, so there's no in-browser synth here. */
 
   // Timing feedback: running tallies + an instant per-note flash (early / good / late).
   let timingTally = null, flashing = false, flashTimer = null;
@@ -669,11 +622,8 @@
 
   /* ---- SSE: live keyboard notes + streamed play-position ---- */
   (function connect() {
-    const es = new EventSource('/events?cid=' + CID);
-    es.onopen = () => {
-      statusEl.className = 'dot ok'; statusEl.title = 'connected';
-      if (soundOn) control({ cmd: 'wants_sound', cid: CID, on: true }).catch(() => {});   // re-assert after a reconnect
-    };
+    const es = new EventSource('/events');
+    es.onopen = () => { statusEl.className = 'dot ok'; statusEl.title = 'connected'; };
     es.onerror = () => { statusEl.className = 'dot err'; statusEl.title = 'reconnecting…'; };
     let lastPct = -1, lastTallyKey = '';
     es.onmessage = ev => {
@@ -707,15 +657,9 @@
       } else if (m.type === 'rating') {
         flashRating(m.kind, m.off);         // instant early/good/late feedback per chord
       } else if (m.type === 'noteon') {
-        PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true); synthOn(m.note, m.velocity);
+        PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true);   // light the key + show it on the staff
       } else if (m.type === 'noteoff') {
-        PiTV.highlight(m.note, false); PiTV.setPlayed(m.note, false); synthOff(m.note);
-      } else if (m.type === 'autoon') {
-        if (m.ch !== 9) synthAutoOn(m.note, m.velocity);   // skip drums (would play as piano)
-      } else if (m.type === 'autooff') {
-        synthAutoOff(m.note);
-      } else if (m.type === 'alloff') {
-        synthAllOff();
+        PiTV.highlight(m.note, false); PiTV.setPlayed(m.note, false);
       }
     };
   })();

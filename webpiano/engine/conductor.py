@@ -253,7 +253,6 @@ class Conductor:
         with self._lock:
             self._playing = False
             self._synth.all_off()        # silence the accompaniment when paused
-            self._on_state({"type": "alloff"})
             self._sounding = []
         self._emit()
 
@@ -382,7 +381,6 @@ class Conductor:
 
     def _seek_auto(self, t):
         self._synth.all_off()
-        self._on_state({"type": "alloff"})       # silence browser accompaniment too
         self._sounding = []
         self._auto_i = 0
         while self._auto_i < len(self._auto) and self._auto[self._auto_i][0] < t:
@@ -402,7 +400,6 @@ class Conductor:
             _, end, ch, pitch, vel = self._auto[self._auto_i]
             snd = max(0, min(127, pitch - self._shift))                   # play at original pitch
             self._synth.noteon(ch, snd, vel)                             # Pi sound (real velocity)
-            self._on_state({"type": "autoon", "note": snd, "velocity": vel, "ch": ch})  # display sound
             self._sounding.append((end, ch, snd))
             self._auto_i += 1
         if self._sounding:
@@ -410,7 +407,6 @@ class Conductor:
             for end, ch, snd in self._sounding:
                 if end <= self._t:
                     self._synth.noteoff(ch, snd)
-                    self._on_state({"type": "autooff", "note": snd})
                 else:
                     still.append((end, ch, snd))
             self._sounding = still
