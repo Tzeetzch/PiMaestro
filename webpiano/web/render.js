@@ -75,6 +75,7 @@ const PiTV = (function () {
   }
   function setSong(vm) {
     song = vm; now = -LOOKAHEAD; setWanted([]); dirty = true; staticDirty = true;
+    gateTimes = []; gatePtr = 0; lastFrozen = -1;   // R.4: gates re-arrive via the 'gates' event
     // precompute static per-note layout ONCE (was recomputed every frame): musical-beat
     // position, and the top note of each chord (for the note-name label).
     const beats = vm.beats || [];
@@ -140,6 +141,42 @@ const PiTV = (function () {
   function setPos(t, isWaiting, want) { now = t; waiting = !!isWaiting; setWanted(want || []); dirty = true; }
   // Live keys the player presses -> drawn on the staff at the play line (PianoBooster behaviour).
   function setPlayed(n, on) { if (on) playedSet.add(n); else playedSet.delete(n); dirty = true; }
+
+  /* ---- R.4 local playback clock (only active in ?next mode; off = unchanged) ---- */
+  let clockOn = false, clockPlaying = false, clockSpeed = 1, lastTs = null;
+  let gateTimes = [], gatePtr = 0, freezeMode = false, lastFrozen = -1;
+  function enableClock() { clockOn = true; }
+  function setClock(playing, speed) { clockPlaying = !!playing; if (speed != null) clockSpeed = +speed || 1; if (!clockPlaying) lastTs = null; dirty = true; }
+  function firstGateAtOrAfter(t) { let lo = 0, hi = gateTimes.length; while (lo < hi) { const m = (lo + hi) >> 1; if (gateTimes[m] < t - 1e-6) lo = m + 1; else hi = m; } return lo; }
+  function setGates(times) { gateTimes = times || []; gatePtr = firstGateAtOrAfter(now); lastFrozen = -1; dirty = true; }
+  function clearGateUpto(gi) { if (gi != null && gi + 1 > gatePtr) { gatePtr = gi + 1; dirty = true; } }   // a verdict = that gate is done
+  function setFreezeMode(on) { freezeMode = !!on; dirty = true; }
+  // Gentle drift correction from the throttled position heartbeat; snap on a big jump (seek/loop).
+  function correctNow(t) {
+    if (!clockOn || t == null) return;
+    if (!clockPlaying) { now = t; dirty = true; return; }
+    if (Math.abs(t - now) > 0.5) { now = t; gatePtr = firstGateAtOrAfter(t); dirty = true; return; }
+    if (freezeMode && gatePtr < gateTimes.length && Math.abs(now - gateTimes[gatePtr]) < 1e-3 && t > now + 0.25) gatePtr++;   // backstop resume if a verdict was missed
+    now += (t - now) * 0.18;
+    dirty = true;
+  }
+  // While frozen at a gate, light the keys you owe — computed locally so the amber is instant.
+  function refreshWantedLocal() {
+    const frozen = clockPlaying && freezeMode && gatePtr < gateTimes.length && Math.abs(now - gateTimes[gatePtr]) < 1e-3;
+    const fg = frozen ? gatePtr : -1;
+    if (fg === lastFrozen) return;                 // only recompute on a freeze-state change
+    lastFrozen = fg;
+    if (!frozen) { waiting = false; setWanted([]); return; }
+    const gt = gateTimes[gatePtr], w = [];
+    if (song) for (const nt of song.notes) {
+      if (Math.abs(nt.t - gt) > 0.05) continue;
+      if (playSet && !playSet.has(nt.ch)) continue;
+      if (playHand && nt.hand !== playHand) continue;
+      if (nt.n < rangeLo || nt.n > rangeHi) continue;
+      w.push(nt.n);
+    }
+    waiting = true; setWanted(w);
+  }
   function setLoop(a, b) { loopA = (a == null ? null : a); loopB = (b == null ? null : b); dirty = true; }
   function setNames(on) { showNames = !!on; dirty = true; }
   function setWanted(list) {
@@ -476,7 +513,20 @@ const PiTV = (function () {
     if (view === 'notation') drawNotation(W, H);
     else drawGame(W, H);
   }
-  function frame() { requestAnimationFrame(frame); if (ctx && dirty) { draw(); dirty = false; } }
+  function frame(ts) {
+    requestAnimationFrame(frame);
+    if (clockOn && clockPlaying) {                 // R.4: advance the local clock, freezing at gates
+      if (lastTs != null) {
+        let n = now + ((ts - lastTs) / 1000) * clockSpeed;
+        if (freezeMode && gatePtr < gateTimes.length && n >= gateTimes[gatePtr]) n = gateTimes[gatePtr];
+        now = n; dirty = true;
+      }
+      lastTs = ts;
+    } else lastTs = null;
+    if (clockOn) refreshWantedLocal();
+    if (ctx && dirty) { draw(); dirty = false; }
+  }
 
-  return { buildKeyboard, highlight, attachCanvas, setSong, setPos, setPlayed, setView, setPlay, setRange, setLoop, setNames };
+  return { buildKeyboard, highlight, attachCanvas, setSong, setPos, setPlayed, setView, setPlay, setRange, setLoop, setNames,
+           enableClock, setClock, setGates, clearGateUpto, setFreezeMode, correctNow };
 })();

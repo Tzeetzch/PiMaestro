@@ -3,6 +3,7 @@
    Timing + Follow-You gating live on the Pi, not here. */
 (function () {
   const $ = id => document.getElementById(id);
+  const NEXT = new URLSearchParams(location.search).has('next');   // R.4: opt-in local-clock + lean-stream path
   const statusEl = $('status'),
         playBtn = $('play'), resetBtn = $('reset'),
         viewBtn = $('view'), songLabel = $('song'),
@@ -63,6 +64,7 @@
 
   PiTV.buildKeyboard($('piano'));
   PiTV.attachCanvas($('fall'));
+  if (NEXT) PiTV.enableClock();                    // render runs its own clock; pos frames only correct it
 
   let loadedFile = null, mode = 'follow', playing = false, currentVM = null, currentPlay = [], currentHand = null;
   let transpose = 'auto';                       // octave shift to fit the keyboard ('auto' or semitones)
@@ -119,6 +121,7 @@
   };
   speedSel.onchange = () => {
     localStorage.setItem('pitv.speed', speedSel.value);
+    if (NEXT) PiTV.setClock(playing, +speedSel.value);
     control({ cmd: 'speed', mult: +speedSel.value }).catch(() => {});
     saveCurrent();
   };
@@ -292,6 +295,7 @@
     songLabel.textContent = '♪ ' + m.vm.title + ' · ' + m.vm.notes.length + ' notes';
     if (m.speed != null) speedSel.value = String(m.speed);
     if (m.mode) { modeSel.value = m.mode; mode = m.mode; }
+    if (NEXT) PiTV.setFreezeMode(mode === 'follow');
     if (m.hand === 'R' || m.hand === 'L') handSel.value = m.hand;
     if (Array.isArray(m.play)) { currentPlay = m.play.slice(); currentHand = m.hand || null; PiTV.setPlay(currentPlay, currentHand); }
     updateModeHint();
@@ -353,6 +357,7 @@
     transpose = transSel.value === 'auto' ? 'auto' : +transSel.value;
     split = +splitSel.value;
     mode = modeSel.value;
+    if (NEXT) PiTV.setFreezeMode(mode === 'follow');
     const ok = await loadSong(file, false, my);         // builds vm with that transpose/range (same token)
     if (my !== loadSeq) return;                         // superseded while loading
     restoring = false;
@@ -378,17 +383,20 @@
     if (!loadedFile) return;
     const wantPlay = !playing;            // decide BEFORE the await — `playing` may change during it
     setPlayBtn(wantPlay);
+    if (NEXT) PiTV.setClock(wantPlay, +speedSel.value);   // optimistic: pause/play feels instant locally
     if (wantPlay) { markPlayed(loadedFile); endedShown = false; finish.hidden = true; }  // fresh run
     try { await control({ cmd: wantPlay ? 'play' : 'stop' }); }
     catch (e) { setPlayBtn(!wantPlay); }  // revert if the request failed
   };
   resetBtn.onclick = async () => {
     setPlayBtn(false);
+    if (NEXT) PiTV.setClock(false);       // pos will snap the clock to the new position
     try { await control({ cmd: 'reset' }); } catch (e) {}
   };
   handSel.onchange = () => applyParts();
   modeSel.onchange = async () => {
     mode = modeSel.value;
+    if (NEXT) PiTV.setFreezeMode(mode === 'follow');   // only Follow freezes the local clock at gates
     updateModeHint();
     PiTV.setPlay(currentPlay, currentHand);
     saveCurrent();
@@ -640,7 +648,12 @@
           es.close(); setTimeout(connect, 60); return;    // stale view: reconnect for a clean hello snapshot
         }
         lastT = m.t;
-        PiTV.setPos(m.t, m.waiting, m.wanted);
+        if (NEXT) {                          // local clock: pos is just a correction heartbeat
+          if (m.gates) PiTV.setGates(m.gates);   // hello carries gates
+          PiTV.correctNow(m.t); PiTV.setClock(m.playing, m.speed);
+        } else {
+          PiTV.setPos(m.t, m.waiting, m.wanted);
+        }
         // visual count-in: 3-2-1 during the pre-roll (negative play time)
         if (playing && m.t < 0) { const n = Math.min(3, Math.ceil(-m.t)); countin.firstChild.textContent = n > 0 ? n : ''; countin.hidden = n <= 0; }
         else if (!countin.hidden) countin.hidden = true;
@@ -656,6 +669,9 @@
         }
       } else if (m.type === 'rating') {
         flashRating(m.kind, m.off);         // instant early/good/late feedback per chord
+        if (NEXT) PiTV.clearGateUpto(m.gi); // verdict = that gate cleared -> local clock resumes
+      } else if (m.type === 'gates') {
+        if (NEXT) PiTV.setGates(m.gates);   // gate set changed (load / part / range / mode)
       } else if (m.type === 'noteon') {
         PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true);   // light the key + show it on the staff
       } else if (m.type === 'noteoff') {

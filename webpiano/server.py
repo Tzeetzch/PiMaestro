@@ -327,6 +327,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
+        # R.4: a "next" client runs its own playback clock, so it only needs the position frame
+        # as a low-rate heartbeat. Throttle `pos` to ~4 Hz for it (always pass play/stop and seek
+        # jumps through promptly, and never touch the discrete events). Old clients: full stream.
+        nxt = (parse_qs(urlparse(self.path).query).get("next") or ["0"])[0] == "1"
+        last_pos, last_play, last_t = 0.0, None, None
         q = queue.Queue(maxsize=2000)
         with clients_lock:
             clients.append(q)
@@ -337,6 +342,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             while True:
                 try:
                     data = q.get(timeout=15)
+                    if nxt and '"type": "pos"' in data[:24]:
+                        obj = json.loads(data)
+                        nowm, pl, t = time.monotonic(), obj.get("playing"), obj.get("t")
+                        jump = last_t is not None and t is not None and abs(t - last_t) > 0.5
+                        if (nowm - last_pos) < 0.25 and pl == last_play and not jump:
+                            last_t = t
+                            continue                 # throttle this position frame for the local-clock client
+                        last_pos, last_play, last_t = nowm, pl, t
                     self.wfile.write(f"data: {data}\n\n".encode())
                 except queue.Empty:
                     self.wfile.write(b": keepalive\n\n")
