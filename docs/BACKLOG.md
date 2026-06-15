@@ -45,6 +45,37 @@ the as-built design and `../webpiano/` for the code.
 
 ---
 
+## Built 2026-06-15 — R.4 implemented + full UI rebuild + Pi tuning (deployed; Peter testing on the TV)
+*All committed; the conversation that produced this is being compacted, so this is the durable summary.
+Dev access while away: the laptop reaches the Pi via ProxyJump `ssh -J peter@100.84.222.121 peter@192.168.3.110`
+(Tailscale box dell-optiplex on the Pi's LAN); a viewing tunnel `localhost:8899 -> Pi:8080` runs in the bg.*
+
+- **R.4 event-driven playback, behind `?next=1`** (and the kiosk `PiTV-Open.sh` now opens `?next=1`):
+  the conductor ships a `gates[]` list IN the load response (vm.gates) + tags each `rating` with its
+  gate (`gi`); the SSE `pos` is throttled to ~4 Hz per `?next` client (verified 120→13); the browser runs
+  a local rAF clock corrected by that heartbeat (gentle slew, snap on jump), freezes at gates, resumes when
+  the **Pi's authoritative `t` passes the gate** (this killed the early-hold overshoot/jitter — a0f1530),
+  optimistic instant pause. Browser sound (`?next` only) = WebAudioTinySynth (`vendor/webaudio-tinysynth.js`)
+  scheduled from the VM + live notes; "Mute Pi" toggle (FluidSynth `gain 0`). Old non-`?next` path still works.
+- **UI rebuilt home-first** (the big one — earlier stage-first/overlay model was wrong): one `go(view)` router,
+  ONE view at a time, ROOTED AT HOME (Home → Library → Setup → Stage; Back goes up; the Stage is a view you
+  Play into / Quit out of — no "menu over stage", no Close-to-stage). Real design system (tokens, cards,
+  components via an `h()` DOM helper + `gtab`/`songItem`). Pause screen on Stop (quick no-reload tweaks +
+  Quit). See memory [[ui-build-home-first]].
+- **Pi-4 performance:** removed `backdrop-filter` + per-key gradients/shadows (88 keys repaint per note);
+  flat fills. Kiosk on the light `?next` renderer.
+- **Sound:** `AUTO_GAIN=0.6` (backing sits under the player's keys) + **per-instrument volume sliders**
+  (CC7 via `cmd:part {volume}`) in the Instruments panel. `EARLY_WINDOW` kept at **0.30** (the early-clear
+  was the FE gate bug, now fixed — do NOT shorten it).
+- **Dotted notes** render correctly now (dotted half/quarter/eighth + the dot) — notation.py note_type.
+- `docs/ARCHITECTURE.md` written (Pi-authoritative/thin-view contract, SSE taxonomy, sound path).
+
+**Open / next:** push the ~22 commits to GitHub; let Peter sign off Follow-resume + played-keys-on-staff +
+sound balance on the TV; maybe relax `AUTO_GAIN` toward 1.0 now that per-instrument volume exists; persist
+per-song instrument volume/program (currently live-only); consider making `?next` the default.
+
+---
+
 ## Independent reviews (2026-06-14) — fixes done + big directions
 Ran 6 parallel reviews (architecture/code/UI-UX/game-design/web-design/audio). **Fixed batch:**
 timing-badge class regression; per-song settings keyed by realpath; MIDI parser resync (no
