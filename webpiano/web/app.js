@@ -769,13 +769,13 @@
     es.onmessage = ev => {
       const m = JSON.parse(ev.data);
       if (m.type === 'pos' || m.type === 'hello') {
-        // Adopt the engine's authoritative state on (re)connect, or when another client switched songs.
-        const newSong = m.vm && (!currentVM || m.file !== loadedFile);
-        if (m.type === 'hello' && newSong) {
-          adoptHello(m);
-          setPlayBtn(!!m.playing);
-          if (m.playing) closeMenu();        // resynced to a playing song -> show the stage
-          else if (!menu.hidden && screen === 'songs') showScreen('setup');   // idle -> its setup (don't interrupt nav)
+        // Only ADOPT the Pi's song on connect when it's actually PLAYING (a real reconnect / a 2nd
+        // device joining mid-song). An idle Pi may still hold a song loaded from before — ignore it,
+        // so a fresh load / F5 starts clean on the Library instead of dumping you into a random song.
+        if (m.type === 'hello') {
+          if (m.vm && m.playing && (!currentVM || m.file !== loadedFile)) {
+            adoptHello(m); setPlayBtn(true); closeMenu();   // join the in-progress song
+          }
         } else if (m.type === 'pos' && m.file && loadedFile && m.file !== loadedFile) {
           es.close(); setTimeout(connect, 60); return;    // stale view: reconnect for a clean hello snapshot
         }
