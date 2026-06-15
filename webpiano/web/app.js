@@ -16,7 +16,9 @@
         menuBack = $('menuBack'), menuHome = $('menuHome'), menuTitle = $('menuTitle'), groupTabs = $('groupTabs'), songList = $('songList'),
         splitField = $('splitField'), modeHint = $('modeHint'),
         finish = $('finish'), finStars = $('finStars'), finSub = $('finSub'), finAgain = $('finAgain'), finPick = $('finPick'),
-        countin = $('countin');
+        countin = $('countin'),
+        pauseEl = $('pause'), pMode = $('pMode'), pSpeed = $('pSpeed'), pHand = $('pHand'),
+        pResume = $('pResume'), pRestart = $('pRestart'), pMore = $('pMore'), pQuit = $('pQuit');
 
   /* ---- multi-screen menu: home -> song picker -> per-song setup -> game; settings off home ---- */
   const SCREENS = { home: 'screenHome', songs: 'screenSongs', setup: 'screenSetup', settings: 'screenSettings' };
@@ -387,9 +389,11 @@
     const wantPlay = !playing;            // decide BEFORE the await — `playing` may change during it
     setPlayBtn(wantPlay);
     if (NEXT) PiTV.setClock(wantPlay, +speedSel.value);   // optimistic: pause/play feels instant locally
-    if (wantPlay) { markPlayed(loadedFile); endedShown = false; finish.hidden = true; }  // fresh run
-    try { await control({ cmd: wantPlay ? 'play' : 'stop' }); }
-    catch (e) { setPlayBtn(!wantPlay); }  // revert if the request failed
+    if (wantPlay) { markPlayed(loadedFile); endedShown = false; finish.hidden = true; closePause(); }  // fresh run
+    try {
+      await control({ cmd: wantPlay ? 'play' : 'stop' });
+      if (!wantPlay) openPause();          // manual stop -> the pause screen (quick tweaks / quit)
+    } catch (e) { setPlayBtn(!wantPlay); }  // revert if the request failed
   };
   resetBtn.onclick = async () => {
     setPlayBtn(false);
@@ -641,10 +645,35 @@
   finAgain.onclick = async () => { finish.hidden = true; endedShown = false; try { await control({ cmd: 'reset' }); } catch (e) {} playBtn.click(); };
   finPick.onclick = () => { finish.hidden = true; endedShown = false; menu.hidden = false; showScreen('songs'); };
 
+  /* ---- pause screen (manual stop): quick no-reload tweaks + resume / restart / quit ---- */
+  function openPause() {
+    if (!loadedFile) return;
+    pMode.innerHTML = modeSel.innerHTML; pMode.value = modeSel.value;       // mirror the live (no-reload) controls
+    pSpeed.innerHTML = speedSel.innerHTML; pSpeed.value = speedSel.value;
+    pHand.innerHTML = handSel.innerHTML; pHand.value = handSel.value;
+    pauseEl.hidden = false;
+    if (kbd) setTimeout(() => focusAt(pResume), 0);
+  }
+  function closePause() { pauseEl.hidden = true; }
+  pMode.onchange = () => { modeSel.value = pMode.value; modeSel.onchange(); };   // drive the real controls
+  pSpeed.onchange = () => { speedSel.value = pSpeed.value; speedSel.onchange(); };
+  pHand.onchange = () => { handSel.value = pHand.value; handSel.onchange(); };
+  pResume.onclick = () => { closePause(); if (!playing) playBtn.click(); };
+  pRestart.onclick = async () => { closePause(); setPlayBtn(false); if (NEXT) PiTV.setClock(false); try { await control({ cmd: 'reset' }); } catch (e) {} playBtn.click(); };
+  pMore.onclick = () => { closePause(); openMenu(); };
+  pQuit.onclick = async () => {                                  // unload the song and go back to the picker
+    closePause(); setPlayBtn(false);
+    if (NEXT) PiTV.setClock(false);
+    try { await control({ cmd: 'stop' }); } catch (e) {}
+    loadedFile = null;                                           // next Play reloads the song fresh
+    menu.hidden = false; showScreen('songs');
+  };
+
   /* ---- D-pad / keyboard navigation (TV remote: arrows + Enter + Back) ---- */
   let kbd = false;                                        // true once the user drives by keys -> show focus ring
   function vis(el) { return el && el.offsetParent !== null && !el.disabled; }
   function navCols() {
+    if (!pauseEl.hidden) return [[pMode, pSpeed, pHand, pResume, pRestart, pMore, pQuit].filter(vis)];
     if (!finish.hidden) return [[finAgain, finPick].filter(vis)];
     if (menu.hidden) return [[playBtn, resetBtn, viewBtn, menuBtn, seekEl].filter(vis)];
     const sc = $(SCREENS[screen]);
@@ -699,12 +728,14 @@
         break;
       case 'Backspace': case 'Escape':
         kbd = true;
-        if (!finish.hidden) { /* leave celebration via its buttons */ }
+        if (!pauseEl.hidden) pResume.click();
+        else if (!finish.hidden) { /* leave celebration via its buttons */ }
         else if (!menu.hidden) { if (screen === 'home') { if (loadedFile) closeMenu(); } else menuBack.onclick(); }
         else openMenu();
         e.preventDefault(); break;
       case ' ': case 'Spacebar':
-        if (menu.hidden && finish.hidden) { playBtn.click(); e.preventDefault(); }
+        if (!pauseEl.hidden) { pResume.click(); e.preventDefault(); }
+        else if (menu.hidden && finish.hidden) { playBtn.click(); e.preventDefault(); }
         break;
     }
   });

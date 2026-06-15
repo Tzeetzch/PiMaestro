@@ -154,6 +154,20 @@
   #finish .fin-sub { color:var(--dim); font-size:18px; }
   #finish .fin-btns { display:flex; gap:14px; margin-top:12px; flex-wrap:wrap; justify-content:center; }
   #finish .bigbtn { font-size:20px; padding:16px 30px; width:auto; }
+
+  /* pause screen (manual stop) — quick no-reload tweaks + resume / restart / quit */
+  #pause[hidden] { display:none; }
+  #pause { position:fixed; inset:0; z-index:18; background:rgba(9,12,17,.96);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; text-align:center; padding:24px; }
+  #pause .p-title { font-size:clamp(24px,5vh,38px); font-weight:800; }
+  .pause-opts { display:flex; gap:18px; flex-wrap:wrap; justify-content:center; align-items:flex-end; }
+  .pause-opts label { display:flex; flex-direction:column; gap:6px; font-size:12px; color:var(--dim);
+    text-transform:uppercase; letter-spacing:.07em; }
+  .pause-opts select { font-size:16px; padding:11px 13px; min-width:150px; }
+  #pause .fin-btns { display:flex; gap:14px; flex-wrap:wrap; justify-content:center; }
+  #pause .bigbtn { font-size:18px; padding:14px 26px; width:auto; }
+  #pResume { background:#2ea043; border-color:#2ea043; color:#fff; }
+  #pQuit { color:#f0a3a3; border-color:#5b3b3b; }
 </style>
 </head>
 <body>
@@ -303,6 +317,23 @@
   </aside>
 
   <div id="countin" hidden><span></span></div>
+
+  <div id="pause" hidden>
+    <div class="p-title">&#9208; Paused</div>
+    <div class="pause-opts">
+      <label>Mode<select id="pMode"></select></label>
+      <label>Speed<select id="pSpeed"></select></label>
+      <label>You play<select id="pHand"></select></label>
+    </div>
+    <div class="fin-btns">
+      <button id="pResume" class="bigbtn">&#9654; Resume</button>
+      <button id="pRestart" class="bigbtn">&#8634; From start</button>
+    </div>
+    <div class="fin-btns">
+      <button id="pMore" class="bigbtn">&#9881; More settings</button>
+      <button id="pQuit" class="bigbtn">&#10005; Quit song</button>
+    </div>
+  </div>
 
   <div id="finish" hidden>
     <div class="fin-title">&#127881; You played it!</div>
