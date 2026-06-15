@@ -156,6 +156,7 @@ class Conductor:
                 self._synth.prog(int(ch), p)
             self._rebuild_auto()
         self._emit()
+        self._emit_gates()
 
     def set_play(self, channels, hand=None):
         """Choose which part(s) the player covers — a set of MIDI channels, optionally
@@ -179,6 +180,7 @@ class Conductor:
             self._lo, self._hi = lo, hi
             self._resync_after_change()
         self._emit()
+        self._emit_gates()
 
     def set_mode(self, mode):
         with self._lock:
@@ -353,10 +355,11 @@ class Conductor:
                     off = comp_song - gt
                 kind = "early" if off < -self.EARLY_TOL else ("late" if off > self.LATE_TOL else "good")
                 setattr(self, "_r_" + kind, getattr(self, "_r_" + kind) + 1)
-                self._on_state({"type": "rating", "kind": kind, "off": round(off, 3)})
+                # gate/gi tag the verdict so a local-clock client knows WHICH gate to clear+resume (R.4)
+                self._on_state({"type": "rating", "kind": kind, "off": round(off, 3), "gate": round(gt, 3), "gi": self._rate_ptr})
             elif self._t > gt + self.RATE_GIVEUP:                 # play-along: you never played it
                 self._r_miss += 1
-                self._on_state({"type": "rating", "kind": "miss", "off": None})
+                self._on_state({"type": "rating", "kind": "miss", "off": None, "gate": round(gt, 3), "gi": self._rate_ptr})
             else:
                 break                                             # current chord still pending
             self._rate_ptr += 1
@@ -465,6 +468,13 @@ class Conductor:
             frame = self._state_locked()
         self._on_state(frame)
 
+    def _emit_gates(self):
+        """Broadcast the current gate times (notes the player must hit). A local-clock client (R.4)
+        reads these to know where to freeze; re-sent whenever the gate set changes."""
+        with self._lock:
+            gates = [round(t, 3) for t, _ in self._gates]
+        self._on_state({"type": "gates", "gates": gates})
+
     def snapshot(self):
         """Full current state for a just-connected client: the loaded song + play position,
         so a fresh/reconnected browser (e.g. the TV) renders the song instead of a blank stage."""
@@ -477,6 +487,7 @@ class Conductor:
             frame["hand"] = self._hand               # reconnecting or 2nd client matches the engine
             frame["mode"] = self._mode               # instead of resetting to defaults
             frame["speed"] = self._speed
+            frame["gates"] = [round(t, 3) for t, _ in self._gates]   # where Follow-You freezes (R.4)
             return frame
 
     def _run(self, gen):
