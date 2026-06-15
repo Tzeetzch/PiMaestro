@@ -731,9 +731,10 @@
         lastT = m.t;
         if (NEXT) {                          // local clock: pos is just a correction heartbeat
           if (m.gates) PiTV.setGates(m.gates);   // hello carries gates
-          if (m.t < soundLastT - 0.3) soundResync();   // seek/loop jumped back -> re-aim the backing
+          const jumpedBack = m.t < soundLastT - 0.3;   // seek/loop/reset went backward
           soundLastT = m.t;
           PiTV.correctNow(m.t); PiTV.setClock(m.playing, m.speed);
+          if (jumpedBack) soundResync();     // AFTER the clock snaps, so the scheduler re-aims at the NEW spot
         } else {
           PiTV.setPos(m.t, m.waiting, m.wanted);
         }
