@@ -29,7 +29,7 @@
         speedSel = $('speedSel'), kbdSel = $('kbdSel'), transSel = $('transSel'),
         loopPanel = $('loopPanel'), scoreEl = $('score'), timeEl = $('time'),
         seekEl = $('seek'), seekFill = $('seekfill'), namesBtn = $('names'),
-        stage = $('stage'), menu = $('menu'), menuClose = $('menuClose'), startBtn = $('startBtn'),
+        stage = $('stage'), menu = $('menu'), startBtn = $('startBtn'),
         favBtn = $('fav'), uploadBtn = $('uploadBtn'), fileInput = $('fileInput'), splitSel = $('splitSel'),
         menuBack = $('menuBack'), menuSettings = $('menuSettings'), menuTitle = $('menuTitle'), groupTabs = $('groupTabs'), songList = $('songList'),
         libTitle = $('libTitle'), libSub = $('libSub'),
@@ -39,38 +39,38 @@
         pauseEl = $('pause'), pMode = $('pMode'), pSpeed = $('pSpeed'), pHand = $('pHand'),
         pResume = $('pResume'), pRestart = $('pRestart'), pMore = $('pMore'), pQuit = $('pQuit');
 
-  /* ---- screens: Library (home) -> per-song Setup -> game; Settings via the gear ---- */
-  const SCREENS = { songs: 'screenSongs', setup: 'screenSetup', settings: 'screenSettings' };
-  const TITLES = { songs: '', setup: '', settings: 'Settings' };
-  let screen = 'songs';
-  function showScreen(name) {
-    screen = name;
-    for (const k in SCREENS) $(SCREENS[k]).hidden = (k !== name);
-    if (name === 'setup') {                         // refresh dynamic bits for this song
-      buildInstr(); buildLoop(); fillSetupHead(); updateModeHint();
-      // Hand split only matters when both hands share one track (else R/L are real channels).
-      const oneTrack = !!(currentVM && currentVM.rightChan != null && currentVM.rightChan === currentVM.leftChan);
-      splitField.style.display = oneTrack ? '' : 'none';
+  /* ---- navigation: ONE view at a time, ROOTED AT HOME. Home -> Library -> Setup -> Stage.
+         Back goes up one level. The Stage is just a view you Play into and Quit out of — there is
+         no "menu over the stage" and no "close to reveal the stage". Home is the root: no Back. ---- */
+  const SCREENS = { home: 'screenHome', library: 'screenSongs', setup: 'screenSetup', settings: 'screenSettings' };
+  const TITLES = { home: '', library: 'Library', setup: '', settings: 'Settings' };
+  const PARENT = { library: 'home', setup: 'library', settings: 'home' };   // where Back goes from each view
+  let view = 'home';
+  function go(name) {
+    view = name;
+    const onStage = (name === 'stage');
+    stage.hidden = !onStage;
+    menu.hidden = onStage;
+    if (!onStage) {
+      for (const k in SCREENS) $(SCREENS[k]).hidden = (k !== name);
+      if (name === 'setup') {                       // refresh dynamic bits for this song
+        buildInstr(); buildLoop(); fillSetupHead(); updateModeHint();
+        const oneTrack = !!(currentVM && currentVM.rightChan != null && currentVM.rightChan === currentVM.leftChan);
+        splitField.style.display = oneTrack ? '' : 'none';
+      }
+      menuTitle.textContent = TITLES[name] || '';
+      menuBack.hidden = (name === 'home');          // Home is the root — nothing above it
+      menuSettings.hidden = (name === 'home' || name === 'settings');
+    } else {
+      requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));   // canvas was display:none
     }
-    menuTitle.textContent = TITLES[name] || '';
-    menuBack.hidden = (name === 'songs');           // Library is the root
-    menuSettings.hidden = (name === 'settings');
-    menuClose.hidden = !loadedFile;                 // can only return to a game once a song is loaded
-    if (kbd) setTimeout(() => focusFirst(), 0);     // land the remote's focus on this screen
+    if (kbd) setTimeout(focusFirst, 0);
   }
-  // Two mutually-exclusive top-level views: the Menu (Library/Setup/Settings) and the Stage
-  // (the playing screen). The Stage exists ONLY while playing or paused — never behind the menu.
-  function showStage() {
-    menu.hidden = true; stage.hidden = false;
-    requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));   // canvas was display:none -> re-measure
-  }
-  function showMenu(scr) { stage.hidden = true; menu.hidden = false; if (scr) showScreen(scr); }
-  function openMenu() { showMenu(loadedFile ? 'setup' : 'songs'); }
-  function closeMenu() { showStage(); }       // "Close" = back to the (loaded) song's stage
-  menuClose.onclick = closeMenu;
-  menuBack.onclick = () => showScreen('songs');     // Setup/Settings -> back to the Library
-  menuSettings.onclick = () => showScreen('settings');
-  startBtn.onclick = () => { closeMenu(); if (!playing) playBtn.click(); };
+  menuBack.onclick = () => go(PARENT[view] || 'home');
+  menuSettings.onclick = () => go('settings');
+  $('homeStart').onclick = () => go('library');
+  $('homeSettings').onclick = () => go('settings');
+  startBtn.onclick = () => { if (!playing) playBtn.click(); };   // "Play now" -> playBtn takes us to the Stage
 
   // Per-mode plain-language hint shown under the Mode dropdown.
   const MODE_HINTS = {
@@ -189,7 +189,7 @@
   }
   function applyParts() {
     setPlayChannels(partChannels(), partHand());
-    if (!menu.hidden) buildInstr();                       // keep the menu's Play boxes in sync
+    if (view === 'setup') buildInstr();                   // keep the Setup Play boxes in sync
     saveCurrent();
   }
 
@@ -365,7 +365,7 @@
       else { buildPartOptions(vm); applyParts(); }
       showTranspose(vm.transpose || 0);
       clearLoop();                               // bar counts differ between songs
-      if (!menu.hidden) { buildInstr(); buildLoop(); }     // refresh open menu for the new song
+      if (view === 'setup') { buildInstr(); buildLoop(); }   // refresh Setup for the new song
       const shift = vm.transpose || 0;
       const stag = shift ? ' · ' + (shift > 0 ? '+' : '') + (shift / 12) + ' oct' : '';
       songLabel.textContent = '♪ ' + vm.title + ' · ' + vm.notes.length + ' notes' + stag;
@@ -406,7 +406,7 @@
     control({ cmd: 'speed', mult: +speedSel.value }).catch(() => {});   // sync engine
     control({ cmd: 'mode', mode: mode }).catch(() => {});
     fillSongList();                                     // highlight the picked song
-    if (!menu.hidden) showScreen('setup');              // advance the wizard to its per-song settings
+    if (view !== 'stage') go('setup');                  // picking a song advances to its Setup
   }
 
   function setPlayBtn(on) {
@@ -422,7 +422,7 @@
     const wantPlay = !playing;            // decide BEFORE the await — `playing` may change during it
     setPlayBtn(wantPlay);
     if (NEXT) PiTV.setClock(wantPlay, +speedSel.value);   // optimistic: pause/play feels instant locally
-    if (wantPlay) { markPlayed(loadedFile); endedShown = false; finish.hidden = true; closePause(); showStage(); }  // fresh run
+    if (wantPlay) { markPlayed(loadedFile); endedShown = false; finish.hidden = true; closePause(); go('stage'); }  // fresh run
     try {
       await control({ cmd: wantPlay ? 'play' : 'stop' });
       if (!wantPlay) openPause();          // manual stop -> the pause screen (quick tweaks / quit)
@@ -544,12 +544,12 @@
     const frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
     control({ cmd: 'seek', t: frac * currentVM.duration }).catch(() => {});
   };
-  let view = 'notation';
+  let canvasView = 'notation';
   viewBtn.textContent = 'View: Notation';
   viewBtn.onclick = () => {
-    view = view === 'game' ? 'notation' : 'game';
-    PiTV.setView(view);
-    viewBtn.textContent = 'View: ' + (view === 'game' ? 'Game' : 'Notation');
+    canvasView = canvasView === 'game' ? 'notation' : 'game';
+    PiTV.setView(canvasView);
+    viewBtn.textContent = 'View: ' + (canvasView === 'game' ? 'Game' : 'Notation');
   };
   let names = localStorage.getItem('pitv.names') !== 'off';     // default on
   function applyNames() { PiTV.setNames(names); namesBtn.textContent = 'Names: ' + (names ? 'on' : 'off'); namesBtn.classList.toggle('on', names); }
@@ -676,7 +676,7 @@
     if (kbd) setTimeout(() => focusAt(finAgain), 0);
   }
   finAgain.onclick = async () => { finish.hidden = true; endedShown = false; try { await control({ cmd: 'reset' }); } catch (e) {} playBtn.click(); };
-  finPick.onclick = () => { finish.hidden = true; endedShown = false; showMenu('songs'); };
+  finPick.onclick = () => { finish.hidden = true; endedShown = false; go('library'); };
 
   /* ---- pause screen (manual stop): quick no-reload tweaks + resume / restart / quit ---- */
   function openPause() {
@@ -693,13 +693,13 @@
   pHand.onchange = () => { handSel.value = pHand.value; handSel.onchange(); };
   pResume.onclick = () => { closePause(); if (!playing) playBtn.click(); };
   pRestart.onclick = async () => { closePause(); setPlayBtn(false); if (NEXT) PiTV.setClock(false); try { await control({ cmd: 'reset' }); } catch (e) {} playBtn.click(); };
-  pMore.onclick = () => { closePause(); showMenu('setup'); };
+  pMore.onclick = () => { closePause(); go('setup'); };
   pQuit.onclick = async () => {                                  // unload the song and go back to the Library
     closePause(); setPlayBtn(false);
     if (NEXT) PiTV.setClock(false);
     try { await control({ cmd: 'stop' }); } catch (e) {}
     loadedFile = null;                                           // next Play reloads the song fresh
-    showMenu('songs');
+    go('library');
   };
 
   /* ---- D-pad / keyboard navigation (TV remote: arrows + Enter + Back) ---- */
@@ -708,9 +708,9 @@
   function navCols() {
     if (!pauseEl.hidden) return [[pMode, pSpeed, pHand, pResume, pRestart, pMore, pQuit].filter(vis)];
     if (!finish.hidden) return [[finAgain, finPick].filter(vis)];
-    if (menu.hidden) return [[playBtn, resetBtn, viewBtn, seekEl].filter(vis)];
-    const sc = $(SCREENS[screen]);
-    if (screen === 'songs') {                             // two columns: category tabs | song list (+ upload)
+    if (view === 'stage') return [[playBtn, resetBtn, viewBtn, seekEl].filter(vis)];
+    const sc = $(SCREENS[view]);
+    if (view === 'library') {                             // two columns: category tabs | song list (+ upload)
       const tabs = Array.from(groupTabs.querySelectorAll('.gtab')).filter(vis);
       const items = Array.from(songList.querySelectorAll('.songitem')).filter(vis).concat([uploadBtn].filter(vis));
       return [tabs, items];
@@ -763,13 +763,12 @@
         kbd = true;
         if (!pauseEl.hidden) pResume.click();
         else if (!finish.hidden) { /* leave celebration via its buttons */ }
-        else if (!menu.hidden) { if (screen === 'songs') { if (loadedFile) closeMenu(); } else menuBack.onclick(); }
-        else if (playing) playBtn.click();    // on the stage: Esc pauses
-        else openMenu();
+        else if (view === 'stage') { if (playing) playBtn.click(); }   // Esc on the stage = pause
+        else if (view !== 'home') go(PARENT[view] || 'home');          // up one level (Home is the root)
         e.preventDefault(); break;
       case ' ': case 'Spacebar':
         if (!pauseEl.hidden) { pResume.click(); e.preventDefault(); }
-        else if (menu.hidden && finish.hidden) { playBtn.click(); e.preventDefault(); }
+        else if (view === 'stage' && finish.hidden) { playBtn.click(); e.preventDefault(); }
         break;
     }
   });
@@ -788,7 +787,7 @@
         // so a fresh load / F5 starts clean on the Library instead of dumping you into a random song.
         if (m.type === 'hello') {
           if (m.vm && m.playing && (!currentVM || m.file !== loadedFile)) {
-            adoptHello(m); setPlayBtn(true); closeMenu();   // join the in-progress song
+            adoptHello(m); setPlayBtn(true); go('stage');   // join the in-progress song
           }
         } else if (m.type === 'pos' && m.file && loadedFile && m.file !== loadedFile) {
           es.close(); setTimeout(connect, 60); return;    // stale view: reconnect for a clean hello snapshot
@@ -835,5 +834,5 @@
   })();
 
   loadSongList();
-  openMenu();          // start on the menu/home screen
+  go('home');          // start at the Home screen (the root)
 })();

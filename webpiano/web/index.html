@@ -118,6 +118,15 @@
 
   .screen{ flex:1 1 0; min-height:0; display:flex; flex-direction:column; }
   .screen[hidden]{ display:none; }
+
+  /* HOME (root) */
+  .home-screen{ align-items:center; justify-content:center; }
+  .home-inner{ display:flex; flex-direction:column; align-items:center; gap:14px; text-align:center; }
+  .home-logo{ font-size:84px; line-height:1; }
+  .home-title{ margin:0; font-size:clamp(40px,7vh,64px); font-weight:800; letter-spacing:.5px; }
+  .home-tagline{ margin:0 0 24px; color:var(--txt2); font-size:19px; }
+  .home-actions{ display:flex; flex-direction:column; gap:16px; width:min(440px,80vw); }
+  .home-actions .btn{ width:100%; }
   .body{ flex:1 1 0; min-height:0; overflow-y:auto; padding:var(--sp4) var(--sp4) var(--sp5); }
   .body .wrap{ max-width:840px; }
   .wrap{ max-width:var(--maxw); margin:0 auto; width:100%; }
@@ -250,11 +259,23 @@
       <span id="menuTitle"></span>
       <span class="grow"></span>
       <button id="menuSettings" class="btn icon ghost" title="Settings">&#9881;</button>
-      <button id="menuClose" class="btn" title="Back to the song" hidden>&#10005; Close</button>
     </div>
 
-    <!-- LIBRARY (home) -->
-    <section id="screenSongs" class="screen">
+    <!-- HOME (root) -->
+    <section id="screenHome" class="screen home-screen">
+      <div class="home-inner">
+        <div class="home-logo">&#127929;</div>
+        <h1 class="home-title">PiMaestro</h1>
+        <p class="home-tagline">Learn piano on the big screen.</p>
+        <div class="home-actions">
+          <button id="homeStart" class="btn lg primary">&#9654; Start playing</button>
+          <button id="homeSettings" class="btn lg">&#9881; Settings</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- LIBRARY -->
+    <section id="screenSongs" class="screen" hidden>
       <nav class="rail"><h2>Library</h2><div id="groupTabs"></div></nav>
       <div class="listpane">
         <div class="listhead"><h1 id="libTitle">Songs</h1><span id="libSub" class="sub"></span></div>
