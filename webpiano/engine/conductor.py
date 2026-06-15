@@ -20,7 +20,7 @@ import time
 LOOKAHEAD = 3.5          # seconds of lead-in (notes fall from the top before t=0)
 TICK = 0.025             # ~40 Hz play-clock / state stream
 AT_LINE_EPS = 0.0010     # tolerance for "note has reached the hit line"
-EARLY_WINDOW = 0.30      # accept a note played up to this much BEFORE the line (forgiving)
+EARLY_WINDOW = 0.15      # accept a note this much BEFORE the line; earlier than this = "too early", keep waiting
 CHORD_WINDOW = 0.45      # all notes of a chord must be pressed within this of each other
 AUTO_VEL = 90            # velocity for auto-played (accompaniment) notes (lacking their own velocity)
 AUTO_GAIN = 0.6          # scale accompaniment velocity DOWN so the backing sits under the player's keys
