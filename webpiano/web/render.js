@@ -159,7 +159,10 @@ const PiTV = (function () {
     if (!clockPlaying || Math.abs(t - now) > 0.5) {    // paused, reset, seek or loop jump: snap + realign the gate
       now = t; gatePtr = firstGateAtOrAfter(t); lastFrozen = -1; dirty = true; return;
     }
-    if (freezeMode && gatePtr < gateTimes.length && Math.abs(now - gateTimes[gatePtr]) < 1e-3 && t > now + 0.25) gatePtr++;   // backstop resume if a verdict was missed
+    // The Pi's position is authoritative: any gate it has already passed (t beyond it) is cleared.
+    // This stops the freeze-clamp from fighting the correction — the cause of overshoot-then-jitter
+    // around a note when you hold the key early.
+    while (freezeMode && gatePtr < gateTimes.length && t > gateTimes[gatePtr] + 0.02) gatePtr++;
     now += (t - now) * 0.18;
     dirty = true;
   }
