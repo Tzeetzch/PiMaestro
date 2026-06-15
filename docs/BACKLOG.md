@@ -184,6 +184,26 @@ place of per-tick `pos`, keep the discrete events. Browser — a small clock mod
 slew), optimistic control, `gen`-based resync. Keep the old `pos` path behind a flag during bring-up to
 A/B and fall back if sync misbehaves.
 
+### Optional layer on top of R.4 — browser sound, done right (Peter's idea, 2026-06-15)
+Once the browser has a local clock + the full VM, browser sound becomes clean and is *strictly better*
+than both the WebAudioFont flood we removed and the audio-stream idea:
+- **Background = scheduled from the VM, not streamed.** The browser feeds the song's non-played notes
+  (with their per-part GM programs) into a WASM SoundFont synth (**spessasynth** or **FluidSynth-WASM**,
+  loading a GM soundfont) on its **local clock** — schedule-ahead, no Pi audio events on the wire,
+  perfect A/V sync because one clock drives both, full GM instruments (kills the "one preset" problem).
+- **Played notes = the real `noteon`/`noteoff`** the Pi already sends — what was actually pressed
+  (mistakes included), NOT the score's expected notes.
+- **Follow-You freeze is free:** the local clock halts at gates, so the accompaniment holds and resumes
+  on the verdict — no extra wiring.
+- **Caveat — listener/spectator only.** The performer must still hear the **Pi** locally (~10 ms);
+  browser sound on the player's own device lags their keypress by the network hop, and it must be OFF
+  wherever the Pi is already audible (HDMI/headphones) to avoid double sound. So this is the
+  "a screen that can't hear the Pi wants sound" feature — the clean replacement for the parked
+  streaming-speaker idea.
+- **Cost:** a WASM synth lib + a GM soundfont asset (few MB), loaded only when the toggle is on; schedule
+  VM notes + sonify the live `noteon`s on the clock. Depends entirely on R.4 (no local clock → nothing to
+  schedule against). Build it *after* R.4, only if a spectator-sound need is real.
+
 ---
 
 ## NEXT — Features PianoBooster has that we don't (ranked, from the gap report)
