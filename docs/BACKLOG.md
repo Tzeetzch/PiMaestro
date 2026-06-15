@@ -114,9 +114,75 @@ Current cost: each playing frame clears+repaints EVERYTHING and loops over ALL n
       + accidentals stay on `strip` (line-width scaling makes the transform not worth it). `DONE`
 - [x] **R.5 Cap backing-store resolution** — `resize()` downscales the canvas bitmap above
       1080p (CSS stretches it); crisp at/under 1080p, ends 4×-pixel paint on a 4K TV. `DONE`
-- [ ] **R.4 (deferred, medium risk)** local clock + interpolation, then lower conductor
-      `TICK` (40→~12 Hz) for smoother scroll + less Pi/SSE load. Touches Follow-You timing —
+- [ ] **R.4 (deferred, medium risk)** local clock + interpolation instead of the 40 Hz position
+      flood. **Full plan below** ("Event-driven playback stream"). Touches Follow-You timing —
       do only with a focused test pass. `TODO`
+
+---
+
+## PLAN — Event-driven playback stream (R.4 in full) (2026-06-15)
+*Design dialogue with Peter. The Pi stays exactly as-is — the brain AND the only sound source.
+This only changes WHAT the Pi streams to the browser during play.*
+
+**Idea (Peter's).** Today the Pi pushes a full `pos` frame ~40×/s. But the browser already holds the
+whole song from load, so it can run its **own playback clock** and the Pi need only send what the browser
+can't derive. Result: ~10× less traffic, smoother scroll (interpolate at the display's 60 Hz instead of
+stepping at 40 Hz), less client CPU/parsing. In Listen mode the stream goes near-silent.
+
+**What the Pi sends during play**
+- **Heartbeat** (~3 Hz) — the reconciliation channel. `{type:'hb', t, playing, speed, gen, seq}`:
+  - `t` — authoritative clock (sec), for gentle drift correction.
+  - `playing` — play/paused, so pause/resume reconciles correctly (Peter's add — see "instant pause").
+  - `speed` — a speed change propagates without a reload.
+  - `gen` (+ `file`) — load-generation, bumped on load and on any gate-set change (hand/part/keyboard/
+    split). A client seeing a new `gen` refetches the VM → cleanly fixes multi-client song-switch and
+    reconnect resync (replaces today's "`file` on every `pos`" hack).
+  - `seq` — monotonic; a gap tells the client to request a fresh snapshot.
+- **Discrete events** (only when they occur): `noteon`/`noteoff` (your live keys → keyboard highlight +
+  staff overlay); `verdict {gate, kind, off}` (early/good/late **tagged with which gate**); transport
+  edges `seek`/`loop`(+loop-jump)/`ended`.
+- **Removed:** the 40 Hz `pos` stream.
+
+**View-model addition.** The VM carries `gates: [t, …]` — the times of notes you must play — computed by
+the Pi at load and re-sent (new `gen`) when the gate set changes. The browser only *reads* gate positions;
+the matching logic (chord window, early window, satisfaction) stays 100% on the Pi.
+
+**Browser clock**
+- Free-runs on rAF: `now += dt * speed` while `playing` and not frozen.
+- **Freeze is emergent:** when `now` reaches a gate not yet cleared, hold there — the browser knows where
+  gates are, so the Pi never has to announce a freeze.
+- **Resume rides on the verdict:** the gate's `verdict` arrives → clear it → roll on. The heartbeat's
+  advancing `t` is the backstop. An **early hit** = verdict arrives before `now` reaches the gate → cleared,
+  never freezes.
+- **Drift correction = gentle slew, not snap:** each heartbeat, ease `now` toward `t` so scroll never
+  jumps; hard-snap only on seek / `gen` change / tab-refocus.
+
+**Instant pause (Peter's idea) → optimistic local control.** On a local Play/Pause/Seek/Speed press,
+apply it to the local clock *immediately* (feels instant, no round-trip), POST the command, and let the
+next heartbeat confirm/correct. Because the audio is the Pi's, it actually pauses ~50 ms later — imperceptible,
+and the visual leading by that hair on pause is fine. `playing` in the heartbeat is what keeps the optimistic
+state honest (incl. when *another* client pauses).
+
+**Extra ideas folded in (build on Peter's):**
+- **Optimistic control + reconcile** generalizes the instant-pause idea to play/seek/speed.
+- **`gen`/`file` in the heartbeat** finally closes the multi-client + reconnect resync gap cleanly.
+- **Gentle clock slew** (game-netcode style) so corrections are invisible.
+- **`seq`-gap → resync** by re-requesting the existing `hello` snapshot.
+- **Heartbeat doubles as keepalive/liveness** — a missed beat or two flips the status dot far faster than
+  today's 15 s SSE keepalive.
+- **Background-tab caveat:** browsers throttle rAF/timers in hidden tabs, so a backgrounded tablet's clock
+  stalls and snaps forward on refocus via the heartbeat. Fine for the always-foreground TV kiosk; just
+  expected behaviour on a tablet you switch away from.
+
+**Risks / focused test pass (this touches Follow-You timing — do it deliberately):** gate freeze/resume;
+early hit; late hit; chord spread across the window; seek/loop-jump during a freeze; speed change mid-song;
+count-in (negative `t`); drift over a long song (no creeping audio↔visual offset); multi-client join +
+song-switch (`gen` bump); reconnect after a blip.
+
+**Effort: medium.** Conductor — add `gates` to the VM, tag verdicts with their gate, emit a heartbeat in
+place of per-tick `pos`, keep the discrete events. Browser — a small clock module (advance/freeze/resume/
+slew), optimistic control, `gen`-based resync. Keep the old `pos` path behind a flag during bring-up to
+A/B and fall back if sync misbehaves.
 
 ---
 
