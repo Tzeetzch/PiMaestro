@@ -65,17 +65,21 @@ const PiTV = (function () {
     resize(); addEventListener('resize', resize);
     requestAnimationFrame(frame);
   }
+  // Dynamic resolution: backing store = CSS px (capped near 1080p) times resScale, which the frame
+  // loop nudges down/up to hold 60fps. CSS stretches the bitmap, so lower res = slightly softer, never
+  // slower. baseScale is the static CSS->backing cap; resScale (0.4..1) is the live quality knob.
+  let baseScale = 1, resScale = 1;
   function resize() {
     if (!canvas) return;
     const cw = canvas.clientWidth, ch = canvas.clientHeight;
-    // R.5: cap the backing store near 1080p to save fill-rate (CSS stretches the bitmap), but
-    // honour up to 2x device-pixel-ratio so a hi-DPI tablet renders crisp. The Pi/TV is DPR 1,
-    // so this leaves the Pi hot-path identical while sharpening handhelds.
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const scale = Math.min(dpr, 1920 / Math.max(cw, 1), 1080 / Math.max(ch, 1));
-    canvas.width = Math.round(cw * scale);
-    canvas.height = Math.round(ch * scale);
-    dirty = true; staticDirty = true;
+    baseScale = Math.min(1, 1920 / Math.max(cw, 1), 1080 / Math.max(ch, 1));
+    applyRes();
+  }
+  function applyRes() {
+    const w = Math.max(1, Math.round(canvas.clientWidth * baseScale * resScale));
+    const h = Math.max(1, Math.round(canvas.clientHeight * baseScale * resScale));
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; staticDirty = true; }
+    dirty = true;
   }
   function setSong(vm) {
     song = vm; now = -LOOKAHEAD; setWanted([]); dirty = true; staticDirty = true;
@@ -551,6 +555,12 @@ const PiTV = (function () {
     if (view === 'notation') drawNotation(W, H);
     else drawGame(W, H);
   }
+  // Hold 60fps the way game engines do: draw EVERY frame (never skip — motion stays smooth), but
+  // adapt the render RESOLUTION to the budget. We track a smoothed draw cost; if it creeps toward the
+  // ~16.6ms 60fps budget we shrink resScale (fewer pixels next frame), and when there's slack we grow
+  // it back toward full. A 9–15ms dead-zone keeps it from oscillating. The clock advances every rAF,
+  // so timing is exact regardless of resolution.
+  let drawCost = 4;
   function frame(ts) {
     requestAnimationFrame(frame);
     if (clockOn && clockPlaying) {                 // R.4: advance the local clock, freezing at gates
@@ -562,7 +572,16 @@ const PiTV = (function () {
       lastTs = ts;
     } else lastTs = null;
     if (clockOn) refreshWantedLocal();
-    if (ctx && dirty) { draw(); dirty = false; }
+    if (ctx && dirty) {
+      // re-scale BEFORE drawing (from the last frame's cost) so this frame is painted at the new res
+      let want = resScale;
+      if (drawCost > 15 && resScale > 0.4) want = resScale * 0.9;        // over budget -> fewer pixels
+      else if (drawCost < 9 && resScale < 1) want = Math.min(1, resScale * 1.06);  // slack -> sharpen back
+      if (Math.abs(want - resScale) > 0.02) { resScale = want; applyRes(); }
+      const t0 = performance.now();
+      draw(); dirty = false;
+      drawCost += ((performance.now() - t0) - drawCost) * 0.1;          // smoothed cost of a draw
+    }
   }
 
   return { buildKeyboard, highlight, flashWrong, attachCanvas, setSong, setPlayed, setView, setPlay, setRange, setLoop, setNames,
