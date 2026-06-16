@@ -80,6 +80,7 @@ const PiTV = (function () {
   function setSong(vm) {
     song = vm; now = -LOOKAHEAD; setWanted([]); dirty = true; staticDirty = true;
     gateTimes = (vm && vm.gates) || []; gatePtr = firstGateAtOrAfter(now); lastFrozen = -1;   // R.4: gates ship in the VM
+    ratedGates = {};   // verdicts belong to the previous song
     // precompute static per-note layout ONCE (was recomputed every frame): musical-beat
     // position, and the top note of each chord (for the note-name label).
     const beats = vm.beats || [];
@@ -148,7 +149,9 @@ const PiTV = (function () {
   /* ---- R.4 local playback clock (always on; pos frames only correct it) ---- */
   let clockOn = false, clockPlaying = false, clockSpeed = 1, lastTs = null;
   let gateTimes = [], gatePtr = 0, freezeMode = false, lastFrozen = -1;
+  let ratedGates = {};   // gate-time -> 'early'|'good'|'late'|'miss' verdict, to colour played notes
   function enableClock() { clockOn = true; }
+  function setRated(gate, kind) { if (gate != null && kind) { ratedGates[gate] = kind; dirty = true; } }
   function setClock(playing, speed) { clockPlaying = !!playing; if (speed != null) clockSpeed = +speed || 1; if (!clockPlaying) lastTs = null; dirty = true; }
   function firstGateAtOrAfter(t) { let lo = 0, hi = gateTimes.length; while (lo < hi) { const m = (lo + hi) >> 1; if (gateTimes[m] < t - 1e-6) lo = m + 1; else hi = m; } return lo; }
   function setGates(times) { gateTimes = times || []; gatePtr = firstGateAtOrAfter(now); lastFrozen = -1; dirty = true; }
@@ -165,6 +168,7 @@ const PiTV = (function () {
   function correctNow(t) {
     if (!clockOn || t == null) return;
     if (!clockPlaying || Math.abs(t - now) > 0.5) {    // paused, reset, seek or loop jump: snap + realign the gate
+      if (t < now - 0.5) ratedGates = {};              // jumped backward (seek/loop/reset) -> re-rate from here
       now = t; gatePtr = firstGateAtOrAfter(t); lastFrozen = -1; dirty = true; return;
     }
     // The Pi's position is authoritative: any gate it has already passed (t beyond it) is cleared.
@@ -249,7 +253,9 @@ const PiTV = (function () {
       const x = L.x * W + 1, w = Math.max(L.w * W - 2, 3);
       const atLine = Math.abs(nt.t - now) < 0.06;
       const mine = (nt.n >= rangeLo && nt.n <= rangeHi) && (!playHand || nt.hand === playHand);
-      const base = (atLine && wantedSet[nt.n]) ? '#f5b21f' : !mine ? '#6f7b8a' : nt.hand === 'L' ? '#56a3ff' : '#58d977';
+      const verdict = mine ? rateCol(ratedGates[nt.t]) : null;   // green/yellow/red once rated
+      const base = verdict ? verdict
+        : (atLine && wantedSet[nt.n]) ? '#f5b21f' : !mine ? '#6f7b8a' : nt.hand === 'L' ? '#56a3ff' : '#58d977';
       const headY = Math.min(yb, lineY);                 // leading edge, clamped to the line
       const active = yb > lineY + 0.5 && yt < lineY;      // straddling the line -> HOLD now
       // remaining-to-hold body (above the line) — shrinks as you hold
@@ -321,7 +327,9 @@ const PiTV = (function () {
         C_BEAT = '#1f2630', C_BARMK = '#323c48', C_BAR = '#79838f',
         C_NAME = '#9aa4b0', C_NOW = '#3b82f0', C_ZONE = 'rgba(59,130,240,0.10)',
         C_BARNUM = '#8b97a6', C_LOOP = 'rgba(150,120,230,0.16)', C_LOOPEDGE = 'rgba(168,140,245,0.85)',
-        C_PLAYED = '#3fe08a';                // the keys the player is pressing (live), shown on the staff
+        C_PLAYED = '#3fe08a',                // the keys the player is pressing (live)
+        C_EARLY = '#f5d000', C_GOOD = '#3fe08a', C_LATE = '#ff6472';   // per-chord verdict colours
+  function rateCol(kind) { return kind === 'good' ? C_GOOD : kind === 'early' ? C_EARLY : (kind === 'late' || kind === 'miss') ? C_LATE : null; }
 
   // Map an arbitrary MIDI pitch to a grand-staff position (stave-index from the staff centre,
   // + a sharp for black keys), so we can draw live-played keys without the engine's per-note layout.
@@ -477,7 +485,9 @@ const PiTV = (function () {
         const x = bx(nt._lx); if (x < scrollX - step || x > endX) continue;
         const y = yOf(nt.staff, nt.idx);
         const mine = (nt.n >= rangeLo && nt.n <= rangeHi) && (!playHand || nt.hand === playHand);
-        const col = (Math.abs(nt.t - now) < 0.06 && wantedSet[nt.n]) ? C_WANT : (mine ? C_NOTE : C_DIM);
+        const verdict = mine ? rateCol(ratedGates[nt.t]) : null;   // green/yellow/red once this chord is rated
+        const col = verdict ? verdict
+          : (Math.abs(nt.t - now) < 0.06 && wantedSet[nt.n]) ? C_WANT : (mine ? C_NOTE : C_DIM);
         const t = nt.sym, dotted = t.charAt(t.length - 1) === '.', base = dotted ? t.slice(0, -1) : t;
         const solid = base !== 'h' && base !== 'w', flags = base === '16' ? 2 : base === '8' ? 1 : 0;
         const c = nt.staff === 'treble' ? trebleC : bassC, lw = 12 * s;
@@ -515,18 +525,20 @@ const PiTV = (function () {
           ctx.fillText(nt.nm, lx, ly);
         }
       }
-      // live keys the player is pressing, drawn on the staff at the play line (PianoBooster behaviour)
+      // Live keys the player is pressing: short horizontal marks just LEFT of the play bar at each
+      // pressed pitch's height (PianoBooster behaviour) — so they show what you're holding WITHOUT
+      // covering the notes sitting on the line.
       if (playedSet.size) {
-        const split = (song && song.split) || 60, lw = 12 * s;
+        const split = (song && song.split) || 60;
+        const x2 = playX - 5 * s, x1 = playX - 30 * s;     // ~1cm tick to the left of the bar
+        ctx.strokeStyle = C_PLAYED; ctx.lineWidth = Math.max(2.5, 3 * s); ctx.lineCap = 'round';
+        ctx.beginPath();
         for (const n of playedSet) {
           const sp = staffPos(+n, split);
-          const c = sp.staff === 'treble' ? trebleC : bassC, y = yOf(sp.staff, sp.idx);
-          ctx.strokeStyle = C_PLAYED; ctx.lineWidth = Math.max(1, s);
-          if (sp.idx >= 6) for (let k = 6; k <= sp.idx; k += 2) { const yy = c - k * step; ctx.beginPath(); ctx.moveTo(playX - lw, yy); ctx.lineTo(playX + lw, yy); ctx.stroke(); }
-          if (sp.idx <= -6) for (let k = -6; k >= sp.idx; k -= 2) { const yy = c - k * step; ctx.beginPath(); ctx.moveTo(playX - lw, yy); ctx.lineTo(playX + lw, yy); ctx.stroke(); }
-          if (sp.acc) accidental(sp.acc, playX - 16 * s, y, s, C_PLAYED);
-          ctx.fillStyle = C_PLAYED; fillGlyph(NOTEHEAD_PATH, playX, y, s);
+          const y = yOf(sp.staff, sp.idx);
+          ctx.moveTo(x1, y); ctx.lineTo(x2, y);
         }
+        ctx.stroke(); ctx.lineCap = 'butt';
       }
       ctx.restore();
     }
@@ -554,5 +566,5 @@ const PiTV = (function () {
   }
 
   return { buildKeyboard, highlight, flashWrong, attachCanvas, setSong, setPlayed, setView, setPlay, setRange, setLoop, setNames,
-           enableClock, setClock, setGates, clearGateUpto, setFreezeMode, correctNow, clockState };
+           enableClock, setClock, setGates, clearGateUpto, setRated, setFreezeMode, correctNow, clockState };
 })();

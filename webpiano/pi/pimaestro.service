@@ -1,0 +1,20 @@
+[Unit]
+Description=PiMaestro web server (piano-learning app)
+# Sound + network up first; FluidSynth is the synth the conductor drives (lazy-reconnects if absent).
+After=pipewire.service fluidsynth.service network-online.target
+Wants=pipewire.service fluidsynth.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/webpiano
+# Free the port if a manual instance (PiTV-Start) or a stale server is holding it, then launch.
+ExecStartPre=-/bin/sh -c 'fuser -k 8080/tcp 8443/tcp 2>/dev/null; sleep 1'
+ExecStart=/usr/bin/python3 %h/webpiano/server.py --tls-cert %h/webpiano/certs/cert.pem --tls-key %h/webpiano/certs/key.pem
+Restart=on-failure
+RestartSec=3
+# keep the same log file the deploy smoke-test + debugging use
+StandardOutput=append:%h/webpiano/server.log
+StandardError=append:%h/webpiano/server.log
+
+[Install]
+WantedBy=default.target

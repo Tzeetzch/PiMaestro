@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PiMaestro">
+<meta name="theme-color" content="#0a0d12">
+<link rel="manifest" href="/remote.webmanifest">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<title>PiMaestro Remote</title>
+<style>
+  :root{ color-scheme:dark; --bg:#0a0d12; --surface:#141b25; --surface2:#1a2331; --line:#324154; --txt:#eef2f7;
+    --txt2:#a9b4c3; --accent:#4d8dff; --bad:#ff6472; --warn:#f5b942; --good:#37d27e; }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; -webkit-touch-callout:none; }
+  html,body{ height:100%; margin:0; }
+  body{ background:radial-gradient(900px 600px at 80% -10%,#16243a 0,transparent 55%),var(--bg);
+    color:var(--txt); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; user-select:none;
+    display:flex; flex-direction:column; align-items:center; gap:22px;
+    padding:max(18px,env(safe-area-inset-top)) 20px max(20px,env(safe-area-inset-bottom)); }
+  .top{ display:flex; align-items:center; gap:12px; width:100%; max-width:440px; }
+  .brand{ font-size:20px; font-weight:800; display:flex; align-items:center; gap:8px; }
+  .brand .logo{ font-size:24px; }
+  .status{ margin-left:auto; display:flex; align-items:center; gap:8px; color:var(--txt2); font-size:14px; }
+  .dot{ width:10px; height:10px; border-radius:50%; background:var(--warn); box-shadow:0 0 8px currentColor; }
+  .dot.ok{ background:var(--good); } .dot.err{ background:var(--bad); }
+  button{ font:inherit; font-weight:700; color:var(--txt); background:var(--surface); border:1px solid var(--line);
+    border-radius:18px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:10px;
+    transition:transform .06s, background .12s, border-color .12s; touch-action:manipulation; }
+  button:active,button.press{ transform:scale(.95); background:var(--accent); border-color:var(--accent); color:#fff; }
+  .gear{ width:46px; height:46px; border-radius:13px; font-size:22px; flex:0 0 auto; }
+
+  .dpad{ display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(3,1fr); gap:12px;
+    width:min(300px,82vw); aspect-ratio:1; }
+  .dpad button{ font-size:34px; }
+  .up{ grid-area:1/2 } .left{ grid-area:2/1 } .ok{ grid-area:2/2 } .right{ grid-area:2/3 } .down{ grid-area:3/2 }
+  .ok{ font-size:22px !important; font-weight:800; background:var(--surface2); }
+  .row{ display:flex; gap:12px; width:min(300px,82vw); }
+  .row button{ flex:1; font-size:18px; padding:20px; }
+  .play{ background:linear-gradient(180deg,#74a6ff,#4d8dff); border-color:transparent; color:#fff; }
+  .hint{ color:var(--txt2); font-size:13px; text-align:center; max-width:320px; line-height:1.5; }
+
+  /* gear menu (the rarely-used / dangerous stuff lives here, out of accidental reach) */
+  .menu[hidden]{ display:none; }
+  .menu{ position:fixed; inset:0; z-index:20; background:rgba(0,0,0,.55);
+    display:flex; align-items:flex-end; justify-content:center; }
+  .sheet{ background:var(--surface); border:1px solid var(--line); border-radius:22px 22px 0 0;
+    width:100%; max-width:480px; padding:18px; display:flex; flex-direction:column; gap:12px;
+    padding-bottom:max(20px,env(safe-area-inset-bottom)); }
+  .sheet h2{ margin:2px 0 6px; font-size:14px; letter-spacing:.1em; text-transform:uppercase; color:var(--txt2); text-align:center; }
+  .item{ display:flex; align-items:center; justify-content:center; gap:10px; padding:18px; border-radius:14px;
+    font-size:18px; font-weight:700; text-decoration:none; color:var(--txt); background:var(--surface2); border:1px solid var(--line); }
+  .item:active{ transform:scale(.98); }
+  .sep{ height:1px; background:var(--line); margin:4px 0; }
+  #off.arm{ background:rgba(255,100,114,.18); border-color:var(--bad); color:#ffb0b8; }
+  #reboot.arm{ background:rgba(245,185,66,.18); border-color:var(--warn); color:#f3d49a; }
+  .item.ghost{ background:transparent; color:var(--txt2); }
+  button:disabled{ opacity:.55; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <span class="brand"><span class="logo">&#127929;</span> Remote</span>
+    <span class="status"><span id="dot" class="dot"></span><span id="stat">…</span></span>
+    <button id="gear" class="gear" title="More">&#9881;</button>
+  </div>
+
+  <!-- TV navigation: drives the on-screen app, no mouse needed -->
+  <div class="dpad">
+    <button class="up"   data-key="ArrowUp">&#8593;</button>
+    <button class="left" data-key="ArrowLeft">&#8592;</button>
+    <button class="ok"   data-key="Enter">OK</button>
+    <button class="right" data-key="ArrowRight">&#8594;</button>
+    <button class="down" data-key="ArrowDown">&#8595;</button>
+  </div>
+  <div class="row">
+    <button data-key="Escape">&#8592; Back</button>
+    <button class="play" data-key=" ">&#9654;&#9208; Play / Pause</button>
+  </div>
+  <div class="hint">Arrows move, OK selects, Back goes up &mdash; drives the app on the TV. Tap &#9881; for the player, the certificate, and power.</div>
+
+  <div id="menu" class="menu" hidden>
+    <div class="sheet">
+      <h2>More</h2>
+      <a class="item" href="/" target="_blank" rel="noopener">&#9654; Open the player</a>
+      <a class="item" href="/pimaestro-ca.crt">&#128274; Get the certificate</a>
+      <div class="sep"></div>
+      <button id="off"><span id="offLbl">&#9211; Shut down</span></button>
+      <button id="reboot"><span id="rebootLbl">&#8635; Restart</span></button>
+      <button id="close" class="item ghost">Close</button>
+    </div>
+  </div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const dot = $('dot'), stat = $('stat'), menu = $('menu');
+  function post(body) { return fetch('/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {}); }
+
+  async function ping() {
+    try { await fetch('/halt', { cache: 'no-store' }); dot.className = 'dot ok'; stat.textContent = 'on'; }
+    catch (e) { dot.className = 'dot err'; stat.textContent = 'off'; }
+  }
+  ping(); setInterval(ping, 4000);
+
+  // D-pad / transport: forward the key to the TV app (it replays it through its own handler).
+  for (const b of document.querySelectorAll('[data-key]')) {
+    b.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      b.classList.add('press'); setTimeout(() => b.classList.remove('press'), 120);
+      post({ cmd: 'key', key: b.getAttribute('data-key') });
+    });
+  }
+
+  // gear menu
+  $('gear').onclick = () => { menu.hidden = false; };
+  $('close').onclick = () => { menu.hidden = true; };
+  menu.onclick = e => { if (e.target === menu) menu.hidden = true; };   // tap the backdrop to close
+
+  // power: two-tap confirm so a stray tap can't kill the Pi
+  function arm(btn, lbl, label, run) {
+    let armed = false, t = null;
+    btn.onclick = async () => {
+      if (!armed) { armed = true; btn.classList.add('arm'); lbl.innerHTML = 'Tap again to confirm';
+        clearTimeout(t); t = setTimeout(() => { armed = false; btn.classList.remove('arm'); lbl.innerHTML = label; }, 4000); return; }
+      clearTimeout(t); armed = false; $('off').disabled = $('reboot').disabled = true;
+      lbl.textContent = run === 'poweroff' ? 'Shutting down…' : 'Restarting…';
+      await post({ cmd: run });
+    };
+  }
+  arm($('off'), $('offLbl'), '&#9211; Shut down', 'poweroff');
+  arm($('reboot'), $('rebootLbl'), '&#8635; Restart', 'reboot');
+
+  // installable PWA: register the SW only on a secure context (HTTPS / localhost).
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost'))
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+</script>
+</body>
+</html>

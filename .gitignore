@@ -25,3 +25,11 @@ Thumbs.db
 /kl.png
 /kc.png
 /pitv_*.png
+
+# TLS keys/certs live ONLY on the Pi (~/webpiano/certs) — never commit private keys
+webpiano/certs/
+*.pem
+*-key.pem
+
+# WebAudioFont samples (~12 MB) live on the Pi; regenerate with pi/fetch-waf.sh
+webpiano/web/waf/

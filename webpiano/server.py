@@ -43,6 +43,11 @@ UPLOAD_DIR = os.path.realpath(os.path.expanduser("~/Music/Uploads"))
 clients = []
 clients_lock = threading.Lock()
 
+# Power action requested by the phone remote ("poweroff"/"reboot"). The server can't do it (it runs
+# in the user manager, not an active seat session), so a tiny watcher IN the graphical session polls
+# /halt and runs the clean `systemctl poweroff|reboot` — which polkit allows the active user, no sudo.
+_POWER_ACTION = ""
+
 # Per-song settings (part/speed/octave/mode) live on the Pi so they follow the song to any
 # client. Keyed by the song's file path.
 SETTINGS_DIR = os.path.expanduser("~/.config/pitv")
@@ -78,7 +83,9 @@ def _save_settings_for(path, settings):
 NOTE_RE = re.compile(r"Note (on|off)\b.*?note (\d+)(?:.*?velocity (\d+))?", re.I)
 
 CTYPES = {"html": "text/html; charset=utf-8", "js": "application/javascript",
-          "css": "text/css", "json": "application/json", "svg": "image/svg+xml"}
+          "css": "text/css", "json": "application/json", "svg": "image/svg+xml",
+          "png": "image/png", "webmanifest": "application/manifest+json",
+          "crt": "application/x-x509-ca-cert"}   # so a tablet recognises the CA download
 
 
 # ---------------------------------------------------------------- MIDI input (SSE)
@@ -181,6 +188,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif u.path == "/settings":
             path = (parse_qs(u.query).get("file") or [""])[0]
             self._json((_load_settings().get(os.path.realpath(path)) or {}) if _is_allowed_song(path) else {})
+        elif u.path == "/halt":
+            self._json(_POWER_ACTION)             # "" | "poweroff" | "reboot" — the session watcher polls this
+        elif u.path == "/remote":
+            self._static("/remote.html")          # phone power remote (clean shutdown/restart, no TV needed)
         elif u.path == "/library":
             self._json(_load_settings())          # {path: {fav, played, ...}} for Favorites/Recent
         else:
@@ -256,6 +267,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             conductor.set_part(req.get("ch"), req.get("mute"), req.get("program"), req.get("volume")); self._json({"ok": True})
         elif cmd == "pi_mute":
             conductor.set_pi_muted(bool(req.get("on"))); self._json({"ok": True})
+        elif cmd in ("poweroff", "reboot"):
+            global _POWER_ACTION; _POWER_ACTION = cmd   # the session watcher performs the clean action
+            self._json({"ok": True})
+        elif cmd == "key":
+            k = req.get("key")                          # phone remote -> the TV app replays this keypress
+            if k:
+                broadcast({"type": "key", "key": str(k)})
+            self._json({"ok": True})
         else:
             self.send_error(400, "unknown cmd")
 
@@ -379,10 +398,23 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--midi", default="DigitalKBD")
+    ap.add_argument("--tls-port", type=int, default=8443)
+    ap.add_argument("--tls-cert", default="")
+    ap.add_argument("--tls-key", default="")
     args = ap.parse_args()
     threading.Thread(target=midi_reader, args=(args.midi,), daemon=True).start()
     print(f"PiTV server: http://0.0.0.0:{args.port}  (MIDI: {args.midi})", flush=True)
     print(f"song roots: {[r for r in SONG_ROOTS if os.path.isdir(r)]}", flush=True)
+    # Optional HTTPS on a second port (same handler), so phones/tablets get a secure context —
+    # required for an installable PWA + service worker. Cert from mkcert (locally trusted).
+    if args.tls_cert and args.tls_key and os.path.exists(args.tls_cert) and os.path.exists(args.tls_key):
+        import ssl
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(args.tls_cert, args.tls_key)
+        https = Server(("0.0.0.0", args.tls_port), Handler)
+        https.socket = ctx.wrap_socket(https.socket, server_side=True)
+        threading.Thread(target=https.serve_forever, daemon=True).start()
+        print(f"PiTV HTTPS:  https://0.0.0.0:{args.tls_port}", flush=True)
     Server(("0.0.0.0", args.port), Handler).serve_forever()
 
 

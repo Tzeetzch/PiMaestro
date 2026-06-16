@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=PiMaestro Power Watcher
+Comment=Lets the in-app Shut down button cleanly power off the Pi (runs in the session)
+Exec=/home/peter/webpiano/pi/PiTV-PowerWatch.sh
+Terminal=false
+X-GNOME-Autostart-enabled=true

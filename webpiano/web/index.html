@@ -3,6 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="PiMaestro">
+<meta name="theme-color" content="#0a0d12">
+<link rel="manifest" href="/app.webmanifest">
+<link rel="icon" href="/icon-app-192.png">
+<link rel="apple-touch-icon" href="/icon-app-180.png">
 <title>PiMaestro</title>
 <style>
   /* ============================ design system ============================ */
@@ -382,6 +389,12 @@
         <div class="card">
           <h3>Sound</h3>
           <div class="field" id="sndRow" hidden><span class="lab">Play sound on this device</span><button id="sndHere" class="btn">&#128266; Off</button></div>
+          <div class="field" id="sndQualRow" hidden><span class="lab">Sound quality</span>
+            <select id="sndQual" title="Rich = real sampled instruments; Light = simpler synth for slower devices">
+              <option value="rich">Rich &mdash; real instruments</option>
+              <option value="light">Light &mdash; faster, simpler</option>
+            </select>
+          </div>
           <div class="field" id="muteRow" hidden><span class="lab">Mute the Pi's speaker</span><button id="piMute" class="btn">&#128264; Mute Pi</button></div>
           <p class="hint">Sound comes from the Pi itself (HDMI / headphone jack). On a device that can't hear the Pi, turn on "Play sound on this device" (and mute the Pi to avoid hearing both).</p>
         </div>
@@ -423,5 +436,11 @@
 
   <script src="render.js"></script>
   <script src="app.js"></script>
+  <script>
+    // installable PWA: register the SW only on a secure context (HTTPS / localhost). Over plain
+    // http on the LAN it's skipped; the TV kiosk hits localhost so it's already a secure context.
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost'))
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+  </script>
 </body>
 </html>

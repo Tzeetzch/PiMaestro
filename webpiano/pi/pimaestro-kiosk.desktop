@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=PiMaestro Kiosk
+Comment=Open PiMaestro fullscreen on the TV at login
+Exec=/home/peter/webpiano/pi/PiTV-Kiosk.sh
+Terminal=false
+X-GNOME-Autostart-enabled=true
