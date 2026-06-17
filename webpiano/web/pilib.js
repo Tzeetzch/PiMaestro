@@ -1,10 +1,13 @@
-/* PiMaestro library: the song catalogue + the left rail (collapsible Drums / Piano / More categories
-   and the Favourites / Recently-played virtual groups) + the song grid + uploads. Owns the catalogue
-   data and the per-song metadata (fav / played / best), and renders into #groupTabs / #songList.
+/* PiMaestro song selector: the left rail (collapsible Drums / Piano / More categories + the
+   Favourites / Recently-played virtual groups) and the song grid. This is a pure VIEW — it does NOT
+   fetch, hold, or persist anything; the song list + metadata live in the catalogue (catalog.js) and
+   arrive here as injected inputs. Its whole job: show the songs, let you pick one, emit the choice.
 
-   Exposed as a global PiLib (like PiTV / PiSound / PiSse). The app injects onPick (what happens when a
-   song is chosen) and control (to persist metadata); the app keeps the "selected file" itself and
-   tells us via select(). Metadata changes go through markPlayed / toggleFav / setBest. */
+   Black-box contract: PiLib names no sibling module. INPUTS: getSongs (the catalogue list), getMeta
+   (fav/played/best for a file), coverGlyph/coverBg (a song's cover art), and onUpload (hand MIDIs to
+   the catalogue). OUTPUT: onPick(file) — the chosen song. The app keeps the "selected file" and tells
+   us via select() to highlight it; the app re-renders us (via the catalogue's onChange) when data
+   changes. Exposed as a global PiLib. */
 const PiLib = (function () {
   const $ = id => document.getElementById(id);
   function h(tag, props, ...kids) {
@@ -24,14 +27,17 @@ const PiLib = (function () {
   const groupTabs = $('groupTabs'), songList = $('songList'), libTitle = $('libTitle'), libSub = $('libSub'),
         uploadBtn = $('uploadBtn'), fileInput = $('fileInput');
 
-  let songsByGroup = {}, allSongs = [], lib = {}, currentGroup = null, selected = null;
-  let ctx = { onPick: () => {}, control: () => Promise.resolve() };
+  let songsByGroup = {}, currentGroup = null, selected = null;
+  let ctx = {
+    getSongs: () => [], getMeta: () => null, coverGlyph: () => '♫', coverBg: () => '',
+    onPick: () => {}, onUpload: () => Promise.resolve({ ok: 0, fail: 0, last: null }),
+  };
   const FAV = '★ Favorites', RECENT = '◷ Recently played';
 
-  function favList() { return allSongs.filter(s => lib[s.file] && lib[s.file].fav); }
+  function favList() { return ctx.getSongs().filter(s => { const m = ctx.getMeta(s.file); return m && m.fav; }); }
   function recentList() {
-    return allSongs.filter(s => lib[s.file] && lib[s.file].played)
-      .sort((a, b) => lib[b.file].played - lib[a.file].played).slice(0, 20);
+    return ctx.getSongs().filter(s => { const m = ctx.getMeta(s.file); return m && m.played; })
+      .sort((a, b) => ctx.getMeta(b.file).played - ctx.getMeta(a.file).played).slice(0, 20);
   }
   // Two-level rail: groups roll up into collapsible categories (Drums / Piano / More).
   const CATS = ['Drums', 'Piano', 'More'];
@@ -71,28 +77,24 @@ const PiLib = (function () {
       h('span', { class: 'gcat-name' }, c),
       h('span', { class: 'count' }, String(count)));
   }
-  function coverGlyph(s) { const t = (s.title || '').trim(); return t ? t[0].toUpperCase() : '♫'; }
-  // Stable hue per title so the grid has rhythm instead of a wall of identical tiles.
-  function coverBg(title) {
-    let hsh = 0; const t = title || '';
-    for (let i = 0; i < t.length; i++) hsh = (hsh * 31 + t.charCodeAt(i)) % 360;
-    return 'linear-gradient(135deg, hsl(' + hsh + ' 58% 52%), hsl(' + ((hsh + 42) % 360) + ' 56% 38%))';
-  }
   function songItem(s) {
+    const m = ctx.getMeta(s.file) || {};
     const meta = [];
-    if (lib[s.file] && lib[s.file].fav) meta.push(h('span', { class: 'si-fav' }, '★'));
-    const best = (lib[s.file] && lib[s.file].best) || 0;
+    if (m.fav) meta.push(h('span', { class: 'si-fav' }, '★'));
+    const best = m.best || 0;
     if (best) meta.push(h('span', { class: 'si-stars' }, '★'.repeat(best)));
     meta.push(h('span', null, s.group));
     return h('li', { class: 'songitem' + (s.file === selected ? ' on' : ''), tabIndex: 0,
       onclick: () => ctx.onPick(s.file) },
-      h('span', { class: 'cover', style: 'background:' + coverBg(s.title) }, coverGlyph(s)),
+      h('span', { class: 'cover', style: 'background:' + ctx.coverBg(s.title) }, ctx.coverGlyph(s)),
       h('span', { class: 'si-main' },
         h('div', { class: 'si-title' }, s.title),
         h('div', { class: 'si-meta' }, ...meta)));
   }
   // Left rail: collapsible category headers + their group tabs (Favourites/Recently on top).
   function render() {
+    songsByGroup = {};
+    for (const s of ctx.getSongs()) (songsByGroup[s.group] = songsByGroup[s.group] || []).push(s);
     const real = Object.keys(songsByGroup);
     const virtual = [];
     if (recentList().length) virtual.push(RECENT);
@@ -123,49 +125,24 @@ const PiLib = (function () {
     songs.forEach(s => songList.append(songItem(s)));
   }
 
-  // Upload a MIDI from any device (raw body, filename in the query — no multipart needed).
+  // Upload button: the view owns the button + per-file feedback; the catalogue does the actual POST.
   uploadBtn.onclick = () => fileInput.click();
   fileInput.onchange = async () => {
     const files = Array.from(fileInput.files || []); if (!files.length) return;
     uploadBtn.disabled = true;
-    let ok = 0, fail = 0, last = null;
-    for (let i = 0; i < files.length; i++) {
-      uploadBtn.textContent = 'Uploading ' + (i + 1) + '/' + files.length + '…';
-      try {
-        const buf = await files[i].arrayBuffer();
-        const r = await fetch('/upload?name=' + encodeURIComponent(files[i].name), { method: 'POST', body: buf });
-        if (!r.ok) throw 0;
-        const res = await r.json();
-        if (!res.file) throw 0;
-        ok++; last = res.file;
-      } catch (e) { fail++; }
-    }
-    await load();                                  // refresh catalogue + library once
-    if (last) { showGroupOf(last); ctx.onPick(last); }
-    uploadBtn.textContent = fail ? ('Added ' + ok + ', ✕' + fail + ' bad') : ('✓ Added ' + ok);
+    const res = await ctx.onUpload(files, (i, total) => { uploadBtn.textContent = 'Uploading ' + (i + 1) + '/' + total + '…'; });
+    if (res && res.last) { showGroupOf(res.last); ctx.onPick(res.last); }   // jump to + pick the newest
+    uploadBtn.textContent = (res && res.fail) ? ('Added ' + res.ok + ', ✕' + res.fail + ' bad') : ('✓ Added ' + ((res && res.ok) || 0));
     uploadBtn.disabled = false;
     setTimeout(() => { uploadBtn.innerHTML = '&#8593; Upload MIDIs'; }, 2500);
   };
 
-  async function load() {
-    try { allSongs = await (await fetch('/songs')).json(); } catch (e) { return; }
-    try { lib = await (await fetch('/library')).json(); } catch (e) { lib = {}; }
-    songsByGroup = {};
-    for (const s of allSongs) (songsByGroup[s.group] = songsByGroup[s.group] || []).push(s);
-    render();
-  }
-  function showGroupOf(file) { const s = allSongs.find(x => x.file === file); if (s) { currentGroup = s.group; render(); } }
+  function showGroupOf(file) { const s = ctx.getSongs().find(x => x.file === file); if (s) { currentGroup = s.group; render(); } }
 
   return {
     init(c) { Object.assign(ctx, c); },
-    load, render,
+    render,                                                        // app re-renders us when the catalogue changes
     select(file) { selected = file || null; render(); },          // mirror the app's chosen song (highlight)
     showGroupOf,                                                   // jump the rail to a file's group (restore/upload)
-    markPlayed(file) { if (!file) return; lib[file] = Object.assign({}, lib[file], { played: Date.now() / 1000 }); ctx.control({ cmd: 'played', file }).catch(() => {}); render(); },
-    toggleFav(file) { if (!file) return false; const on = !(lib[file] && lib[file].fav); lib[file] = Object.assign({}, lib[file], { fav: on }); ctx.control({ cmd: 'favorite', file, on }).catch(() => {}); render(); return on; },
-    isFav(file) { return !!(file && lib[file] && lib[file].fav); },
-    bestOf(file) { return (lib[file] && lib[file].best) || 0; },
-    setBest(file, stars) { if (!file || stars <= ((lib[file] && lib[file].best) || 0)) return; lib[file] = Object.assign({}, lib[file], { best: stars }); ctx.control({ cmd: 'save_settings', file, settings: { best: stars } }).catch(() => {}); render(); },
-    coverGlyph, coverBg,                                          // setup hero reuses these
   };
 })();

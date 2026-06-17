@@ -165,7 +165,7 @@
      "selected file" and tells PiLib to highlight it; PiLib calls back via onPick when a song is
      chosen, and the app persists fav/played/best through PiLib's methods. ---- */
   let selFile = null;
-  favBtn.onclick = () => { if (selFile) { PiLib.toggleFav(selFile); PiSetup.updateFavBtn(); } };
+  favBtn.onclick = () => { if (selFile) { PiCatalog.toggleFav(selFile); PiSetup.updateFavBtn(); } };
 
   // Adopt the engine's authoritative snapshot (sent in the SSE 'hello' on connect / song change),
   // so a reconnecting or second client matches what the Pi is actually playing — not a default.
@@ -268,7 +268,7 @@
     const wantPlay = !playing;            // decide BEFORE the await — `playing` may change during it
     setPlayBtn(wantPlay);
     PiTV.setClock(wantPlay, +speedSel.value);   // optimistic: pause/play feels instant locally
-    if (wantPlay) { PiLib.markPlayed(loadedFile); endedShown = false; finish.hidden = true; closePause(); go('stage'); }  // fresh run
+    if (wantPlay) { PiCatalog.markPlayed(loadedFile); endedShown = false; finish.hidden = true; closePause(); go('stage'); }  // fresh run
     try {
       await control({ cmd: wantPlay ? 'play' : 'stop' });
       if (!wantPlay) openPause();          // manual stop -> the pause screen (quick tweaks / quit)
@@ -372,7 +372,7 @@
     finStars.textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
     finSub.textContent = good + ' good · ' + late + ' late · ' + early + ' early'
       + (miss ? ' · ' + miss + ' missed' : '') + (wrong ? ' · ' + wrong + ' wrong' : '');
-    if (loadedFile) PiLib.setBest(loadedFile, stars);   // best (persisted) follows the song; only writes if higher
+    if (loadedFile) PiCatalog.setBest(loadedFile, stars);   // best (persisted) follows the song; only writes if higher
     finish.hidden = false;
     if (PiNav.isKbd()) setTimeout(() => PiNav.focusAt(finAgain), 0);
   }
@@ -415,7 +415,7 @@
   PiSetup.init({                                           // the Setup screen: part dropdown + instruments + hero
     getVM: () => currentVM, getPlay: () => currentPlay, getSelFile: () => selFile, control,
     onPlay: (channels) => { setPlayChannels(channels, null); saveCurrent(); },   // player re-picked their tracks
-    coverGlyph: PiLib.coverGlyph, coverBg: PiLib.coverBg, isFav: PiLib.isFav,    // injected — PiSetup never names PiLib
+    coverGlyph: PiCatalog.coverGlyph, coverBg: PiCatalog.coverBg, isFav: PiCatalog.isFav,    // injected — PiSetup never names the catalogue
   });
 
   /* ---- SSE: live keyboard notes + streamed play-position. The transport (connect/reconnect/parse)
@@ -467,7 +467,15 @@
     noteoff: m => { PiTV.highlight(m.note, false); PiTV.setPlayed(m.note, false); PiSound.live(m.note, false); },
   });
 
-  PiLib.init({ onPick: selectSong, control });   // PiLib calls selectSong when a song tile is chosen
-  PiLib.load();
+  // The catalogue holds the data; the selector (PiLib) is a pure view of it. The app wires them:
+  // catalogue change -> re-render the selector; a tile pick / upload -> back through the catalogue.
+  PiCatalog.init({ control, onChange: () => PiLib.render() });
+  PiLib.init({
+    getSongs: () => PiCatalog.songs(), getMeta: (f) => PiCatalog.meta(f),
+    coverGlyph: PiCatalog.coverGlyph, coverBg: PiCatalog.coverBg,
+    onPick: selectSong,                                       // a song tile was chosen
+    onUpload: (files, prog) => PiCatalog.upload(files, prog), // MIDIs dropped on the upload button
+  });
+  PiCatalog.load();                                           // fetch songs + metadata -> fires onChange -> renders
   go('home');          // start at the Home screen (the root)
 })();

@@ -37,8 +37,8 @@ MIDI keyboard ──ALSA──▶ FluidSynth (TCP :9800, -a pipewire) ──▶ 
   play/pause/reset, the pause + end-of-song reward screens, the screen router, and the SSE handlers.
   The browser logic was carved into single-concern boxes (below); `app.js` is the only one that knows
   the others by name and wires them together.
-- **web/{sound,sse,pilib,nav,transport,setup}.js** — the carved boxes (PiSound / PiSse / PiLib / PiNav /
-  PiTransport / PiSetup). See **Box contracts** below.
+- **web/{sound,sse,catalog,pilib,nav,transport,setup}.js** — the carved boxes (PiSound / PiSse /
+  PiCatalog / PiLib / PiNav / PiTransport / PiSetup). See **Box contracts** below.
 
 ## Box contracts
 
@@ -57,7 +57,8 @@ mechanically: grepping each module for `Pi<Sibling>.` returns nothing except in 
 | **PiTV** (render.js) | `setSong`, `setPlay`, gate/clock/view/loop setters, `highlight`/`flashWrong` | `clockState()` (pulled) | songs, engine, sound, nav |
 | **PiSound** (sound.js) | `getVM`, `isMine`, `control`, `getClock` | audio out; `pi_mute` cmd | PiTV, library, nav |
 | **PiSse** (sse.js) | `start(handlers)`, `reconnect()` | `handlers[type](msg)` dispatch | what the messages *mean* |
-| **PiLib** (pilib.js) | `init({onPick, control})`, `load`, `select` | `onPick(file)` | engine internals, the stage |
+| **PiCatalog** (catalog.js) | `control`, `onChange`; `load`/`upload` driven | `songs/meta/isFav/bestOf` (pulled), `coverGlyph/coverBg` | the DOM, the selector, the stage |
+| **PiLib** (pilib.js) | `getSongs`, `getMeta`, `coverGlyph/coverBg`, `onPick`, `onUpload` | `onPick(file)` | where songs *come from*, engine, the stage |
 | **PiNav** (nav.js) | `getView/Playing/VM`, `control`, `go`, `openPause` | focus moves + element actions | what a screen *contains* |
 | **PiTransport** (transport.js) | `getVM`, `control`, `showLoop` | seek / loop commands | PiTV, the play-flow |
 | **PiSetup** (setup.js) | `getVM/Play/SelFile`, `control`, `coverGlyph/coverBg/isFav`, `onPlay` | `onPlay(channels)` | PiLib, PiTV, the stage |

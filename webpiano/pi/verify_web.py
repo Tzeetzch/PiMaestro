@@ -108,9 +108,17 @@ def main():
               "| scripts:", ev("document.scripts.length"), "| body len:", ev("document.body? document.body.innerHTML.length : -1"))
 
         problems = []
-        mods = ev("[typeof PiTV,typeof PiSound,typeof PiSse,typeof PiLib,typeof PiNav,typeof PiTransport,typeof PiSetup].join(',')")
+        mods = ev("[typeof PiTV,typeof PiSound,typeof PiSse,typeof PiCatalog,typeof PiLib,typeof PiNav,typeof PiTransport,typeof PiSetup].join(',')")
         if "undefined" in (mods or "undefined"):
             problems.append(f"a module is missing: {mods}")
+        # catalogue -> selector: PiCatalog.load() populated songs and the selector rendered the grid
+        nsongs = ev("PiCatalog.songs().length")
+        ngrid = ev("document.querySelectorAll('#songList .songitem').length")
+        if not nsongs:
+            problems.append("PiCatalog.songs() empty (catalogue did not load)")
+        if not ngrid:
+            problems.append("song grid empty (selector did not render from catalogue)")
+        print("catalogue -> songs:", nsongs, "| grid items:", ngrid)
 
         # drive the library + d-pad: go to library, press Down, confirm focus moved and kbd-mode on
         ev("document.getElementById('homeStart').click()")
@@ -162,7 +170,7 @@ def main():
         errs = ev("JSON.stringify(window.__errs||[])")
         errlist = json.loads(errs or "[]")
 
-        print("modules (PiTV,PiSound,PiSse,PiLib,PiNav,PiTransport,PiSetup):", mods)
+        print("modules (PiTV,PiSound,PiSse,PiCatalog,PiLib,PiNav,PiTransport,PiSetup):", mods)
         print("after ArrowDown -> kbd:", kbd, "| active:", active, "| nav-here:", navhere)
         print("after pick -> setup shown:", setup, "| title:", title)
         print("JS errors / rejections:", errlist if errlist else "none")
