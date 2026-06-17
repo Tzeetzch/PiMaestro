@@ -222,74 +222,69 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (ValueError, OSError):
             self.send_error(400, "bad json")
             return
-        cmd = req.get("cmd")
-        if cmd == "load":
-            path = req.get("file", "")
-            if not _is_allowed_song(path):
-                self.send_error(403, "song not allowed")
-                return
-            lo, hi = req.get("lo"), req.get("hi")
-            try:
-                vm = build_view_model(path, req.get("transpose", 0), lo, hi, req.get("split") or 60)
-            except Exception as e:                          # noqa: BLE001
-                self.send_error(500, f"parse failed: {e}")
-                return
-            conductor.load(vm, req.get("play"), lo, hi, path)
-            self._json(vm)                                  # browser renders from this
-        elif cmd == "play":
-            conductor.play(); self._json({"ok": True})
-        elif cmd == "stop":
-            conductor.stop(); self._json({"ok": True})
-        elif cmd == "reset":
-            conductor.rewind(); self._json({"ok": True})
-        elif cmd == "play_parts":
-            conductor.set_play(req.get("channels"), req.get("hand")); self._json({"ok": True})
-        elif cmd == "mode":
-            conductor.set_mode(req.get("mode", "follow")); self._json({"ok": True})
-        elif cmd == "speed":
-            conductor.set_speed(req.get("mult", 1.0)); self._json({"ok": True})
-        elif cmd == "loop":
-            conductor.set_loop(req.get("start"), req.get("end")); self._json({"ok": True})
-        elif cmd == "range":
-            conductor.set_range(req.get("lo"), req.get("hi")); self._json({"ok": True})
-        elif cmd == "seek":
-            conductor.seek(req.get("t")); self._json({"ok": True})
-        elif cmd == "save_settings":
-            f = req.get("file", "")
-            if _is_allowed_song(f):
-                _save_settings_for(os.path.realpath(f), req.get("settings"))
-            self._json({"ok": True})
-        elif cmd == "favorite":
-            f = req.get("file", "")
-            if _is_allowed_song(f):
-                _save_settings_for(os.path.realpath(f), {"fav": bool(req.get("on"))})
-            self._json({"ok": True})
-        elif cmd == "played":
-            f = req.get("file", "")
-            if _is_allowed_song(f):
-                _save_settings_for(os.path.realpath(f), {"played": time.time()})
-            self._json({"ok": True})
-        elif cmd == "part":
-            conductor.set_part(req.get("ch"), req.get("mute"), req.get("program"), req.get("volume")); self._json({"ok": True})
-        elif cmd == "pi_mute":
-            conductor.set_pi_muted(bool(req.get("on"))); self._json({"ok": True})
-        elif cmd in ("poweroff", "reboot"):
-            global _POWER_ACTION; _POWER_ACTION = cmd   # the session watcher performs the clean action
-            self._json({"ok": True})
-        elif cmd == "exit":
-            # Close the fullscreen kiosk and drop back to the desktop. No privilege needed — the
-            # kiosk Chromium is OUR user's process, so the server signals it directly (unlike
-            # poweroff/reboot, which need the seat-session watcher). The kiosk script `exec`s
-            # chromium, so killing it just returns to labwc; relaunch via the desktop shortcut.
-            subprocess.Popen(["pkill", "-f", "chromium.*--app=http://localhost:8080"])
-            self._json({"ok": True})
-        elif cmd == "key":
-            k = req.get("key")                          # phone remote -> the TV app replays this keypress
-            if k:
-                broadcast({"type": "key", "key": str(k)})
-            self._json({"ok": True})
+        handler = self._CONTROL.get(req.get("cmd"))
+        if handler:
+            handler(self, req)
         else:
             self.send_error(400, "unknown cmd")
+
+    # --- /control command handlers (registered in the _CONTROL dispatch table at the end) ---
+    def _c_load(self, req):
+        path = req.get("file", "")
+        if not _is_allowed_song(path):
+            self.send_error(403, "song not allowed"); return
+        lo, hi = req.get("lo"), req.get("hi")
+        try:
+            vm = build_view_model(path, req.get("transpose", 0), lo, hi, req.get("split") or 60)
+        except Exception as e:                          # noqa: BLE001
+            self.send_error(500, f"parse failed: {e}"); return
+        conductor.load(vm, req.get("play"), lo, hi, path)
+        self._json(vm)                                  # browser renders from this
+    def _c_play(self, req): conductor.play(); self._json({"ok": True})
+    def _c_stop(self, req): conductor.stop(); self._json({"ok": True})
+    def _c_reset(self, req): conductor.rewind(); self._json({"ok": True})
+    def _c_play_parts(self, req): conductor.set_play(req.get("channels"), req.get("hand")); self._json({"ok": True})
+    def _c_mode(self, req): conductor.set_mode(req.get("mode", "follow")); self._json({"ok": True})
+    def _c_speed(self, req): conductor.set_speed(req.get("mult", 1.0)); self._json({"ok": True})
+    def _c_loop(self, req): conductor.set_loop(req.get("start"), req.get("end")); self._json({"ok": True})
+    def _c_range(self, req): conductor.set_range(req.get("lo"), req.get("hi")); self._json({"ok": True})
+    def _c_seek(self, req): conductor.seek(req.get("t")); self._json({"ok": True})
+    def _c_part(self, req): conductor.set_part(req.get("ch"), req.get("mute"), req.get("program"), req.get("volume")); self._json({"ok": True})
+    def _c_pi_mute(self, req): conductor.set_pi_muted(bool(req.get("on"))); self._json({"ok": True})
+    def _c_key(self, req):
+        k = req.get("key")                              # phone remote -> the TV app replays this keypress
+        if k:
+            broadcast({"type": "key", "key": str(k)})
+        self._json({"ok": True})
+    # persistence: settings / favourite / played all share one guarded write
+    def _save_song(self, req, payload):
+        f = req.get("file", "")
+        if _is_allowed_song(f):
+            _save_settings_for(os.path.realpath(f), payload)
+        self._json({"ok": True})
+    def _c_save_settings(self, req): self._save_song(req, req.get("settings"))
+    def _c_favorite(self, req): self._save_song(req, {"fav": bool(req.get("on"))})
+    def _c_played(self, req): self._save_song(req, {"played": time.time()})
+    # power: poweroff/reboot set a flag the seat-session watcher acts on; exit kills our own kiosk
+    def _set_power(self, action):
+        global _POWER_ACTION
+        _POWER_ACTION = action
+        self._json({"ok": True})
+    def _c_poweroff(self, req): self._set_power("poweroff")
+    def _c_reboot(self, req): self._set_power("reboot")
+    def _c_exit(self, req):
+        # The kiosk Chromium is our own user's process, so we can signal it directly — no privilege
+        # needed (unlike poweroff/reboot). The kiosk script `exec`s chromium, so killing it drops to
+        # labwc; relaunch via the desktop shortcut.
+        subprocess.Popen(["pkill", "-f", "chromium.*--app=http://localhost:8080"])
+        self._json({"ok": True})
+    _CONTROL = {
+        "load": _c_load, "play": _c_play, "stop": _c_stop, "reset": _c_reset,
+        "play_parts": _c_play_parts, "mode": _c_mode, "speed": _c_speed, "loop": _c_loop,
+        "range": _c_range, "seek": _c_seek, "part": _c_part, "pi_mute": _c_pi_mute, "key": _c_key,
+        "save_settings": _c_save_settings, "favorite": _c_favorite, "played": _c_played,
+        "poweroff": _c_poweroff, "reboot": _c_reboot, "exit": _c_exit,
+    }
 
     # --- API ---
     def _upload(self, qs):
