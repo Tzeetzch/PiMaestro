@@ -139,6 +139,9 @@
   .body{ flex:1 1 0; min-height:0; overflow-y:auto; padding:var(--sp4) var(--sp4) var(--sp5); }
   .body .wrap{ max-width:840px; }
   .wrap{ max-width:var(--maxw); margin:0 auto; width:100%; }
+  /* TVs are ≥1080p: the 840px column looks like a narrow strip with huge dead margins, so widen
+     the menu content (and keep the footer button aligned to its right edge) on big screens. */
+  @media (min-width:1280px){ .body .wrap, .foot .wrap{ max-width:1180px; } }
 
   /* ---- library (home) ---- */
   #screenSongs{ flex-direction:row; min-height:0; }

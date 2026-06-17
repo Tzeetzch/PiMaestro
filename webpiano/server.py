@@ -270,6 +270,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif cmd in ("poweroff", "reboot"):
             global _POWER_ACTION; _POWER_ACTION = cmd   # the session watcher performs the clean action
             self._json({"ok": True})
+        elif cmd == "exit":
+            # Close the fullscreen kiosk and drop back to the desktop. No privilege needed — the
+            # kiosk Chromium is OUR user's process, so the server signals it directly (unlike
+            # poweroff/reboot, which need the seat-session watcher). The kiosk script `exec`s
+            # chromium, so killing it just returns to labwc; relaunch via the desktop shortcut.
+            subprocess.Popen(["pkill", "-f", "chromium.*--app=http://localhost:8080"])
+            self._json({"ok": True})
         elif cmd == "key":
             k = req.get("key")                          # phone remote -> the TV app replays this keypress
             if k:

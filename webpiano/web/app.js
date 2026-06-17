@@ -841,9 +841,20 @@
     let ci = cols.findIndex(c => c.indexOf(cur) >= 0);
     if (ci < 0) { focusFirst(); return; }
     let ri = cols[ci].indexOf(cur);
-    if (dCol) { ci = Math.max(0, Math.min(cols.length - 1, ci + dCol)); ri = Math.min(Math.max(ri, 0), cols[ci].length - 1); }
-    if (dRow) { ri = Math.max(0, Math.min(cols[ci].length - 1, ri + dRow)); }
-    focusAt(cols[ci][ri]);
+    if (dCol) {                                   // jump columns, keep the nearest row
+      ci = Math.max(0, Math.min(cols.length - 1, ci + dCol));
+      ri = Math.min(Math.max(ri, 0), cols[ci].length - 1);
+      focusAt(cols[ci][ri]); return;
+    }
+    // Vertical: WRAP top<->bottom and skip anything that won't take focus, so the d-pad always
+    // traverses the whole column. (Single-column screens like Setup put the primary button last,
+    // so a plain clamp dead-ended Down/Left/Right the moment you landed there.)
+    const col = cols[ci], L = col.length;
+    for (let n = 0; n < L; n++) {
+      ri = ((ri + dRow) % L + L) % L;
+      focusAt(col[ri]);
+      if (document.activeElement === col[ri]) return;
+    }
   }
   function seekBy(dir) {
     if (!currentVM) return;

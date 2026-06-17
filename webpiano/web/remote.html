@@ -88,6 +88,7 @@
       <a class="item" href="/" target="_blank" rel="noopener">&#9654; Open the player</a>
       <a class="item" href="/pimaestro-ca.crt">&#128274; Get the certificate</a>
       <div class="sep"></div>
+      <button id="exit" class="item">&#10006; Close app (to desktop)</button>
       <button id="off"><span id="offLbl">&#9211; Shut down</span></button>
       <button id="reboot"><span id="rebootLbl">&#8635; Restart</span></button>
       <button id="close" class="item ghost">Close</button>
@@ -132,6 +133,8 @@
   }
   arm($('off'), $('offLbl'), '&#9211; Shut down', 'poweroff');
   arm($('reboot'), $('rebootLbl'), '&#8635; Restart', 'reboot');
+  // Close the kiosk back to the desktop. Mild (relaunch from the desktop shortcut), so single-tap.
+  $('exit').onclick = () => { post({ cmd: 'exit' }); menu.hidden = true; };
 
   // installable PWA: register the SW only on a secure context (HTTPS / localhost).
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost'))

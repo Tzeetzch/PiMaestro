@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=PiMaestro
+Comment=Open PiMaestro fullscreen on the TV (relaunch after "Close app")
+Exec=/home/peter/webpiano/pi/PiTV-Kiosk.sh
+Icon=/home/peter/webpiano/web/icon-app-192.png
+Terminal=false
+Categories=AudioVideo;
