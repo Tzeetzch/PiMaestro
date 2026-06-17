@@ -20,10 +20,11 @@ import socket
 import threading
 import time
 
+from .scorekeeper import ScoreKeeper, EARLY_WINDOW   # the timing judge + the shared "near the line" window
+
 LOOKAHEAD = 3.5          # seconds of lead-in (notes fall from the top before t=0)
 TICK = 0.025             # ~40 Hz play-clock tick (pos frames are throttled to ~4 Hz in server.py)
 AT_LINE_EPS = 0.0010     # tolerance for "note has reached the hit line"
-EARLY_WINDOW = 0.30      # accept a note played up to this much (SONG time) BEFORE the line (forgiving)
 AUTO_VEL = 90            # velocity for auto-played (accompaniment) notes (lacking their own velocity)
 AUTO_GAIN = 0.6          # scale accompaniment velocity DOWN so the backing sits under the player's keys
 MASTER_GAIN = 0.7        # FluidSynth master gain when not Pi-muted (set on load so it never jumps)
@@ -161,11 +162,10 @@ class Conductor:
         self._auto_i = 0         # next auto note to start
         self._sounding = []      # [(end, ch, pitch)] auto notes currently ringing
         self._muted = set()      # channels the user muted (skipped in accompaniment)
-        self._played = []        # recent (song_time, pitch) you pressed — for scoring
+        self._score = ScoreKeeper(on_state)   # the timing judge: press log, per-chord verdicts, tally
         self._clicks = []        # count-in click times (negative seconds) for the current run
         self._click_i = 0
         self._pi_muted = False   # FluidSynth silenced (a browser device is the speaker)
-        self._reset_rating()
 
     def _resync_after_change(self):
         """Re-derive gates + accompaniment after a part/range/mode change, keeping position.
@@ -342,20 +342,18 @@ class Conductor:
         with self._lock:
             if not self._playing:
                 return
-            self._played.append((self._t, pitch, time.monotonic()))   # song-time + real-time of press
-            if len(self._played) > 128:
-                self._played = self._played[-128:]
+            now = time.monotonic()
+            self._score.record_press(self._t, pitch, now)   # song-time + real-time of press, for scoring
             if self._gate_idx < len(self._gates):
                 gate_t, wanted = self._gates[self._gate_idx]
                 near = self._t >= gate_t - EARLY_WINDOW
                 if near and pitch in wanted:
-                    self._satisfied[pitch] = time.monotonic()  # timestamp -> chord-together check
+                    self._satisfied[pitch] = now            # timestamp -> chord-together check
                 elif (near and self._mode == "follow" and self._lo <= pitch <= self._hi
                       and not self._sounds_near(pitch)):
                     # a key with NO note anywhere in the music around now — not yours, not the backing,
                     # not the next chord you're reading into -> a real wrong note. Flash it red.
-                    self._r_wrong += 1
-                    self._on_state({"type": "rating", "kind": "wrong", "off": None, "note": pitch})
+                    self._score.wrong_note(pitch)
 
     # ---- internals (call with lock held unless noted) ----
     def _rebuild_gates(self):
@@ -381,61 +379,14 @@ class Conductor:
         self._t = -LOOKAHEAD
         self._gate_idx = 0
         self._satisfied = {}
-        self._reset_rating()
+        self._score.reset(self._gate_idx)
 
     def _seek_to(self, t):
         self._gate_idx = 0
         self._satisfied = {}
         while self._gate_idx < len(self._gates) and self._gates[self._gate_idx][0] < t - AT_LINE_EPS:
             self._gate_idx += 1
-        self._reset_rating()                  # the part/range/position changed — start the tally fresh
-
-    # ---- timing feedback: rate each chord you play early / good / late (or missed) ----
-    RATE_GIVEUP = 0.6        # play-along: declare a miss this long (s) after the note's time
-    EARLY_TOL = 0.07         # finished earlier than this (s) before the line = "early"
-    LATE_TOL = 0.15          # finished later than this (s) = "late"; in between = "good"
-    def _reset_rating(self):
-        self._r_early = self._r_good = self._r_late = self._r_miss = self._r_wrong = 0
-        self._rate_ptr = self._gate_idx       # next gate to rate; skip ones already behind
-        self._rate_arrival = None             # real time the current gate reached the line
-        self._played = []
-
-    def _rate_finalize(self, now):
-        """Rate the gate at _rate_ptr once it's played (or timed out). Timing is in seconds
-        early(-)/late(+): finishing BEFORE the line uses song-time; finishing AFTER uses REAL
-        time — the song freezes at the line in Follow, so 'how long it waited for you' IS the
-        lateness. Emits a 'rating' event per chord for instant feedback."""
-        while self._rate_ptr < len(self._gates):
-            gt, wanted = self._gates[self._rate_ptr]
-            if self._t >= gt and self._rate_arrival is None:
-                self._rate_arrival = now                          # chord reached the line now
-            sel, ok = [], True
-            for w in wanted:
-                cands = [(pt, rt) for (pt, pp, rt) in self._played if pp == w and pt >= gt - EARLY_WINDOW]
-                if not cands:
-                    ok = False
-                    break
-                sel.append(min(cands, key=lambda c: abs(c[0] - gt)))   # press nearest the line
-            if ok:
-                comp_song = max(c[0] for c in sel)                # when the chord was completed
-                comp_real = max(c[1] for c in sel)
-                if comp_song < gt - 0.02:
-                    off = comp_song - gt                          # finished before the line: early
-                elif self._rate_arrival is not None:
-                    off = comp_real - self._rate_arrival          # after the line: real seconds late
-                else:
-                    off = comp_song - gt
-                kind = "early" if off < -self.EARLY_TOL else ("late" if off > self.LATE_TOL else "good")
-                setattr(self, "_r_" + kind, getattr(self, "_r_" + kind) + 1)
-                # gate/gi tag the verdict so a local-clock client knows WHICH gate to clear+resume (R.4)
-                self._on_state({"type": "rating", "kind": kind, "off": round(off, 3), "gate": round(gt, 3), "gi": self._rate_ptr})
-            elif self._t > gt + self.RATE_GIVEUP:                 # play-along: you never played it
-                self._r_miss += 1
-                self._on_state({"type": "rating", "kind": "miss", "off": None, "gate": round(gt, 3), "gi": self._rate_ptr})
-            else:
-                break                                             # current chord still pending
-            self._rate_ptr += 1
-            self._rate_arrival = None
+        self._score.reset(self._gate_idx)     # the part/range/position changed — start the tally fresh
 
     # ---- accompaniment (the parts the player is NOT covering) ----
     def _rebuild_auto(self):
@@ -496,7 +447,7 @@ class Conductor:
         # over seconds; neither should evaporate the press. EARLY_WINDOW (song-time, in on_note)
         # still stops a way-too-early press from counting; _satisfied is cleared on gate advance
         # (and on seek/reset), so a press can never leak to the next gate. Chord-togetherness is
-        # intentionally NOT separately scored (Follow stays forgiving); add it in _rate_finalize if wanted.
+        # intentionally NOT separately scored (Follow stays forgiving); add it in ScoreKeeper.finalize if wanted.
         return set(self._satisfied)
 
     def _waiting(self):
@@ -539,11 +490,7 @@ class Conductor:
             "speed": self._speed,          # so a 2nd client's local clock tracks a speed change
             "waiting": waiting,
             "wanted": wanted,
-            "timing": {                                 # early/good/late tallies (Follow + Play-along)
-                "early": self._r_early, "good": self._r_good,
-                "late": self._r_late, "miss": self._r_miss, "wrong": self._r_wrong,
-                "on": self._mode != "listen",
-            },
+            "timing": self._score.tally(self._mode != "listen"),   # early/good/late tallies (Follow + Play-along)
         }
 
     def _emit(self, seeked=False):
@@ -603,7 +550,7 @@ class Conductor:
                     if self._mode == "follow":
                         self._advance_gates()        # only Follow-You freezes at gates
                     if self._mode != "listen":
-                        self._rate_finalize(now)     # rate each chord early/good/late as it passes
+                        self._score.finalize(self._t, self._gates, now)   # rate each chord early/good/late as it passes
                     self._service_auto()             # play the accompaniment up to here
                     if self._t >= self._duration + 1.0:
                         self._playing = False
