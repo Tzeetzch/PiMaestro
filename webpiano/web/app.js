@@ -944,66 +944,54 @@
     es.onopen = () => { statusEl.className = 'dot ok'; statusEl.title = 'connected'; };
     es.onerror = () => { statusEl.className = 'dot err'; statusEl.title = 'reconnecting…'; };
     let lastPct = -1, lastTallyKey = '';
-    es.onmessage = ev => {
-      const m = JSON.parse(ev.data);
-      if (m.type === 'pos' || m.type === 'hello') {
-        // Only ADOPT the Pi's song on connect when it's actually PLAYING (a real reconnect / a 2nd
-        // device joining mid-song). An idle Pi may still hold a song loaded from before — ignore it,
-        // so a fresh load / F5 starts clean on the Library instead of dumping you into a random song.
-        if (m.type === 'hello') {
-          if (m.vm && m.playing && (!currentVM || m.file !== loadedFile)) {
-            adoptHello(m); setPlayBtn(true); go('stage');   // join the in-progress song
-          } else if (m.vm && !currentVM) {
-            // The Pi has a song loaded but PAUSED and this is a fresh/2nd client with nothing of
-            // its own: adopt the model so the transport works (and Play isn't a dead no-op), but
-            // DON'T auto-navigate — stay on Home so a plain F5 lands clean.
-            adoptHello(m); setPlayBtn(!!m.playing);
-          }
-        } else if (m.type === 'pos' && m.file && loadedFile && m.file !== loadedFile) {
-          es.close(); setTimeout(connect, 60); return;    // stale view: reconnect for a clean hello snapshot
+    // The pos/hello heartbeat is the one heavy arm — keep it in a named function; the rest are a map.
+    function onPos(m) {
+      // Only ADOPT the Pi's song on connect when it's actually PLAYING (a real reconnect / a 2nd
+      // device joining mid-song). An idle Pi may still hold a song loaded from before — ignore it,
+      // so a fresh load / F5 starts clean on the Library instead of dumping you into a random song.
+      if (m.type === 'hello') {
+        if (m.vm && m.playing && (!currentVM || m.file !== loadedFile)) {
+          adoptHello(m); setPlayBtn(true); go('stage');   // join the in-progress song
+        } else if (m.vm && !currentVM) {
+          adoptHello(m); setPlayBtn(!!m.playing);          // loaded-but-paused: adopt model, stay on Home
         }
-        lastT = m.t;
-        // local clock: pos is just a correction heartbeat
-        if (m.gates) PiTV.setGates(m.gates);   // hello carries gates
-        const jumpedBack = m.t < soundLastT - 0.3;   // seek/loop/reset went backward
-        soundLastT = m.t;
-        PiTV.correctNow(m.t); PiTV.setClock(m.playing, m.speed);
-        if (jumpedBack) soundResync();     // AFTER the clock snaps, so the scheduler re-aims at the NEW spot
-        // visual count-in: 3-2-1 during the pre-roll (negative play time)
-        if (playing && m.t < 0) { const n = Math.min(3, Math.ceil(-m.t)); countin.firstChild.textContent = n > 0 ? n : ''; countin.hidden = n <= 0; }
-        else if (!countin.hidden) countin.hidden = true;
-        const d = currentVM ? currentVM.duration : 0;
-        const pct = d > 0 ? Math.max(0, Math.min(100, m.t / d * 100)) : 0;
-        if (Math.abs(pct - lastPct) >= 0.2) {
-          seekFill.style.width = pct + '%'; seekEl.setAttribute('aria-valuenow', Math.round(pct));
-          seekEl.setAttribute('aria-valuetext', fmtTime(m.t) + ' of ' + fmtTime(d));   // screen reader: time, not bare %
-          timeEl.textContent = fmtTime(m.t) + ' / ' + fmtTime(d); lastPct = pct;
-        }
-        timingTally = m.timing;
-        const tk = m.timing ? [m.timing.good, m.timing.late, m.timing.early, m.timing.miss, m.timing.wrong, m.timing.on].join() : '';
-        if (!flashing && tk !== lastTallyKey) { showTiming(); lastTallyKey = tk; }   // only repaint when it changes
-        if (m.ended) {                       // song finished on its own (one-shot, never flips back)
-          setPlayBtn(false); countin.hidden = true;
-          if (!endedShown) { endedShown = true; celebrate(); }
-        }
-      } else if (m.type === 'key') {        // phone remote: replay the keypress through the D-pad handler
-        kbd = true;
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: m.key, bubbles: true, cancelable: true }));
-      } else if (m.type === 'gate') {
-        PiTV.clearGateUpto(m.gi);           // the Pi cleared this gate (freeze cursor) -> local clock resumes here
-      } else if (m.type === 'rating') {
-        flashRating(m.kind, m.off, m.note); // feedback only now (early/good/late/miss/wrong) — gate-clear is its own event
-        if (m.gate != null) PiTV.setRated(m.gate, m.kind);   // colour that chord's notes green/yellow/red
-      } else if (m.type === 'gates') {
-        PiTV.setGates(m.gates);             // gate set changed (load / part / range / mode)
-      } else if (m.type === 'noteon') {
-        PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true);   // light the key + show it on the staff
-        liveSound(m.note, true, m.velocity);
-      } else if (m.type === 'noteoff') {
-        PiTV.highlight(m.note, false); PiTV.setPlayed(m.note, false);
-        liveSound(m.note, false);
+      } else if (m.file && loadedFile && m.file !== loadedFile) {
+        es.close(); setTimeout(connect, 60); return;       // stale view: reconnect for a clean hello snapshot
       }
+      lastT = m.t;                                         // local clock: pos is just a correction heartbeat
+      if (m.gates) PiTV.setGates(m.gates);                 // hello carries gates
+      const jumpedBack = m.t < soundLastT - 0.3;           // seek/loop/reset went backward
+      soundLastT = m.t;
+      PiTV.correctNow(m.t); PiTV.setClock(m.playing, m.speed);
+      if (jumpedBack) soundResync();                       // AFTER the clock snaps, re-aim the scheduler
+      if (playing && m.t < 0) { const n = Math.min(3, Math.ceil(-m.t)); countin.firstChild.textContent = n > 0 ? n : ''; countin.hidden = n <= 0; }
+      else if (!countin.hidden) countin.hidden = true;
+      const d = currentVM ? currentVM.duration : 0;
+      const pct = d > 0 ? Math.max(0, Math.min(100, m.t / d * 100)) : 0;
+      if (Math.abs(pct - lastPct) >= 0.2) {
+        seekFill.style.width = pct + '%'; seekEl.setAttribute('aria-valuenow', Math.round(pct));
+        seekEl.setAttribute('aria-valuetext', fmtTime(m.t) + ' of ' + fmtTime(d));   // screen reader: time, not bare %
+        timeEl.textContent = fmtTime(m.t) + ' / ' + fmtTime(d); lastPct = pct;
+      }
+      timingTally = m.timing;
+      const tk = m.timing ? [m.timing.good, m.timing.late, m.timing.early, m.timing.miss, m.timing.wrong, m.timing.on].join() : '';
+      if (!flashing && tk !== lastTallyKey) { showTiming(); lastTallyKey = tk; }   // only repaint when it changes
+      if (m.ended) {                                       // song finished on its own (one-shot, never flips back)
+        setPlayBtn(false); countin.hidden = true;
+        if (!endedShown) { endedShown = true; celebrate(); }
+      }
+    }
+    // SSE protocol -> handler map (was a 7-way if/else on m.type)
+    const handlers = {
+      pos: onPos, hello: onPos,
+      key: m => { kbd = true; document.dispatchEvent(new KeyboardEvent('keydown', { key: m.key, bubbles: true, cancelable: true })); },
+      gate: m => PiTV.clearGateUpto(m.gi),                 // freeze cursor cleared -> local clock resumes here
+      rating: m => { flashRating(m.kind, m.off, m.note); if (m.gate != null) PiTV.setRated(m.gate, m.kind); },
+      gates: m => PiTV.setGates(m.gates),                  // gate set changed (load / part / range / mode)
+      noteon: m => { PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true); liveSound(m.note, true, m.velocity); },
+      noteoff: m => { PiTV.highlight(m.note, false); PiTV.setPlayed(m.note, false); liveSound(m.note, false); },
     };
+    es.onmessage = ev => { const m = JSON.parse(ev.data); const fn = handlers[m.type]; if (fn) fn(m); };
   })();
 
   loadSongList();
