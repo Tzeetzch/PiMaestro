@@ -5,11 +5,7 @@
 # NOTE: --kiosk (not --start-fullscreen) — labwc ignores --start-fullscreen for --app windows,
 # which left the page in a ~960px floating window centred on the TV with black bars all round.
 # --kiosk forces a real borderless fullscreen surface (verified 1920x1080, DPR 1).
-
-# Register on HDMI-CEC so the TV detects the Pi ("PiMaestro") and forwards its remote's
-# D-pad/OK/colour keys to us. The vc4_hdmi adapter resets to unconfigured every boot, so claim a
-# logical address here (no sudo needed); the kernel's RC passthrough then delivers the keypresses.
-cec-ctl -d /dev/cec0 --playback --osd-name PiMaestro >/dev/null 2>&1 || true
+# (HDMI-CEC setup + the LG-remote->keystroke bridge live in the separate pimaestro-cec service.)
 
 for i in $(seq 1 60); do
   curl -sf -o /dev/null http://localhost:8080/ && break
