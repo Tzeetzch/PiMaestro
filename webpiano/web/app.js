@@ -216,11 +216,19 @@
     return allSongs.filter(s => lib[s.file] && lib[s.file].played)
       .sort((a, b) => lib[b.file].played - lib[a.file].played).slice(0, 20);
   }
-  function groupNames() {
-    const names = [];
-    if (recentList().length) names.push(RECENT);
-    if (favList().length) names.push(FAV);
-    return names.concat(Object.keys(songsByGroup));
+  // Two-level rail: groups roll up into collapsible categories (Drums / Piano / More).
+  const CATS = ['Drums', 'Piano', 'More'];
+  function catOf(g) {
+    if (/^Drums\b/.test(g)) return 'Drums';
+    if (/^(Game|Popular|Uploads)\b/.test(g)) return 'More';
+    return 'Piano';                          // piano-first app: course, lessons, my songs all live here
+  }
+  function subLabel(g) { return g.replace(/^(Drums|Piano)\s*-\s*/, ''); }   // hide the category prefix
+  let collapsedCats = new Set((localStorage.getItem('pitv.collapsed') || '').split(',').filter(Boolean));
+  function toggleCat(c) {
+    collapsedCats.has(c) ? collapsedCats.delete(c) : collapsedCats.add(c);
+    localStorage.setItem('pitv.collapsed', [...collapsedCats].join(','));
+    buildGroupTabs();
   }
   function songsForGroup(g) {
     if (g === FAV) return favList();
@@ -228,10 +236,17 @@
     return songsByGroup[g] || [];
   }
   // --- components (DRY view builders) ---
-  function gtab(g) {
-    return h('button', { class: 'gtab' + (g === currentGroup ? ' on' : ''), tabIndex: 0,
+  function gtab(g, sub) {
+    return h('button', { class: 'gtab' + (sub ? ' sub' : '') + (g === currentGroup ? ' on' : ''), tabIndex: 0,
       onclick: () => { currentGroup = g; buildGroupTabs(); } },
-      h('span', null, g), h('span', { class: 'count' }, String(songsForGroup(g).length)));
+      h('span', null, subLabel(g)), h('span', { class: 'count' }, String(songsForGroup(g).length)));
+  }
+  function gcat(c, count) {
+    const open = !collapsedCats.has(c);
+    return h('button', { class: 'gcat' + (open ? ' open' : ''), tabIndex: 0, onclick: () => toggleCat(c) },
+      h('span', { class: 'chev' }, open ? '▾' : '▸'),
+      h('span', { class: 'gcat-name' }, c),
+      h('span', { class: 'count' }, String(count)));
   }
   function coverGlyph(s) { const t = (s.title || '').trim(); return t ? t[0].toUpperCase() : '♫'; }
   // Derive a stable hue per title so the grid has rhythm instead of a wall of identical tiles.
@@ -255,10 +270,21 @@
   }
   // Left rail: one tab per category. Selecting a tab repaints the song list.
   function buildGroupTabs() {
-    const names = groupNames();
-    if (!currentGroup || !names.includes(currentGroup)) currentGroup = names[0] || null;
+    const real = Object.keys(songsByGroup);
+    const virtual = [];
+    if (recentList().length) virtual.push(RECENT);
+    if (favList().length) virtual.push(FAV);
+    const all = virtual.concat(real);
+    if (!currentGroup || !all.includes(currentGroup)) currentGroup = all[0] || null;
+    if (currentGroup && !virtual.includes(currentGroup)) collapsedCats.delete(catOf(currentGroup));  // keep the selection visible
     groupTabs.innerHTML = '';
-    names.forEach(g => groupTabs.append(gtab(g)));
+    virtual.forEach(g => groupTabs.append(gtab(g)));               // Favourites / Recently — uncategorised, on top
+    for (const c of CATS) {
+      const groups = real.filter(g => catOf(g) === c);
+      if (!groups.length) continue;
+      groupTabs.append(gcat(c, groups.reduce((n, g) => n + songsForGroup(g).length, 0)));
+      if (!collapsedCats.has(c)) groups.forEach(g => groupTabs.append(gtab(g, true)));
+    }
     fillSongList();
   }
   // Right pane: the songs in the chosen category. Clicking one loads it and goes to Setup.
@@ -808,7 +834,7 @@
     if (view === 'stage') return [[backBtn, playBtn, resetBtn, viewBtn, seekEl].filter(vis)];
     const sc = $(SCREENS[view]);
     if (view === 'library') {                             // category rail | the song GRID (modeled as real columns)
-      const tabs = Array.from(groupTabs.querySelectorAll('.gtab')).filter(vis);
+      const tabs = Array.from(groupTabs.querySelectorAll('.gcat, .gtab')).filter(vis);
       const items = Array.from(songList.querySelectorAll('.songitem')).filter(vis);
       if (!items.length) return [tabs, [songList.querySelector('.hint.empty'), uploadBtn].filter(vis)];
       const rows = []; let top = null, row = null;        // group tiles into visual rows by their top edge...
