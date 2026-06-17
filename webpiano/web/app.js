@@ -205,169 +205,31 @@
     return r.json();
   }
 
-  /* ---- song catalogue (+ Favorites / Recently-played virtual categories) ---- */
-  let songsByGroup = {}, allSongs = [], lib = {}, currentGroup = null, selFile = null;
-  const FAV = '★ Favorites', RECENT = '◷ Recently played';
-  async function loadSongList() {
-    try { allSongs = await (await fetch('/songs')).json(); } catch (e) { return; }
-    try { lib = await (await fetch('/library')).json(); } catch (e) { lib = {}; }
-    songsByGroup = {};
-    for (const s of allSongs) (songsByGroup[s.group] = songsByGroup[s.group] || []).push(s);
-    buildGroupTabs();
-  }
-  function favList() { return allSongs.filter(s => lib[s.file] && lib[s.file].fav); }
-  function recentList() {
-    return allSongs.filter(s => lib[s.file] && lib[s.file].played)
-      .sort((a, b) => lib[b.file].played - lib[a.file].played).slice(0, 20);
-  }
-  // Two-level rail: groups roll up into collapsible categories (Drums / Piano / More).
-  const CATS = ['Drums', 'Piano', 'More'];
-  function catOf(g) {
-    if (/^Drums\b/.test(g)) return 'Drums';
-    if (/^(Game|Popular|Uploads)\b/.test(g)) return 'More';
-    return 'Piano';                          // piano-first app: course, lessons, my songs all live here
-  }
-  function subLabel(g) { return g.replace(/^(Drums|Piano)\s*-\s*/, ''); }   // hide the category prefix
-  let collapsedCats = new Set((localStorage.getItem('pitv.collapsed') || '').split(',').filter(Boolean));
-  function toggleCat(c) {
-    collapsedCats.has(c) ? collapsedCats.delete(c) : collapsedCats.add(c);
-    localStorage.setItem('pitv.collapsed', [...collapsedCats].join(','));
-    buildGroupTabs();
-  }
-  function songsForGroup(g) {
-    if (g === FAV) return favList();
-    if (g === RECENT) return recentList();
-    return songsByGroup[g] || [];
-  }
-  // --- components (DRY view builders) ---
-  function gtab(g, sub) {
-    return h('button', { class: 'gtab' + (sub ? ' sub' : '') + (g === currentGroup ? ' on' : ''), tabIndex: 0,
-      onclick: () => { currentGroup = g; buildGroupTabs(); } },
-      h('span', null, subLabel(g)), h('span', { class: 'count' }, String(songsForGroup(g).length)));
-  }
-  // Inline SVG (currentColor) so it renders on the Pi's Chromium, which has no emoji font.
-  const CAT_ICON = {
-    Drums: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="17" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="7.5" cy="5" r="1.7" fill="currentColor" stroke="none"/><line x1="16.4" y1="6.4" x2="5" y2="20"/><line x1="8.1" y1="6.4" x2="19" y2="20"/></svg>',
-    Piano: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="7.3" y="5" width="3" height="6.5" rx="0.5" fill="currentColor" stroke="none"/><rect x="13.7" y="5" width="3" height="6.5" rx="0.5" fill="currentColor" stroke="none"/></svg>',
-    More: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6.5" cy="17.5" r="2.4" fill="currentColor" stroke="none"/><circle cx="16.5" cy="15.5" r="2.4" fill="currentColor" stroke="none"/><path d="M8.9 17.5V6.5l9.6-2v11"/></svg>',
-  };
-  function gcat(c, count) {
-    const open = !collapsedCats.has(c);
-    return h('button', { class: 'gcat' + (open ? ' open' : ''), tabIndex: 0, onclick: () => toggleCat(c) },
-      h('span', { class: 'chev' }, open ? '▾' : '▸'),
-      h('span', { class: 'cicon', html: CAT_ICON[c] || '' }),
-      h('span', { class: 'gcat-name' }, c),
-      h('span', { class: 'count' }, String(count)));
-  }
-  function coverGlyph(s) { const t = (s.title || '').trim(); return t ? t[0].toUpperCase() : '♫'; }
-  // Derive a stable hue per title so the grid has rhythm instead of a wall of identical tiles.
-  function coverBg(title) {
-    let hsh = 0; const t = title || '';
-    for (let i = 0; i < t.length; i++) hsh = (hsh * 31 + t.charCodeAt(i)) % 360;
-    return 'linear-gradient(135deg, hsl(' + hsh + ' 58% 52%), hsl(' + ((hsh + 42) % 360) + ' 56% 38%))';
-  }
-  function songItem(s) {
-    const meta = [];
-    if (lib[s.file] && lib[s.file].fav) meta.push(h('span', { class: 'si-fav' }, '★'));
-    const best = (lib[s.file] && lib[s.file].best) || 0;
-    if (best) meta.push(h('span', { class: 'si-stars' }, '★'.repeat(best)));
-    meta.push(h('span', null, s.group));
-    return h('li', { class: 'songitem' + (s.file === selFile ? ' on' : ''), tabIndex: 0,
-      onclick: () => selectSong(s.file) },
-      h('span', { class: 'cover', style: 'background:' + coverBg(s.title) }, coverGlyph(s)),
-      h('span', { class: 'si-main' },
-        h('div', { class: 'si-title' }, s.title),
-        h('div', { class: 'si-meta' }, ...meta)));
-  }
-  // Left rail: one tab per category. Selecting a tab repaints the song list.
-  function buildGroupTabs() {
-    const real = Object.keys(songsByGroup);
-    const virtual = [];
-    if (recentList().length) virtual.push(RECENT);
-    if (favList().length) virtual.push(FAV);
-    const all = virtual.concat(real);
-    if (!currentGroup || !all.includes(currentGroup)) currentGroup = all[0] || null;
-    if (currentGroup && !virtual.includes(currentGroup)) collapsedCats.delete(catOf(currentGroup));  // keep the selection visible
-    groupTabs.innerHTML = '';
-    virtual.forEach(g => groupTabs.append(gtab(g)));               // Favourites / Recently — uncategorised, on top
-    for (const c of CATS) {
-      const groups = real.filter(g => catOf(g) === c);
-      if (!groups.length) continue;
-      groupTabs.append(gcat(c, groups.reduce((n, g) => n + songsForGroup(g).length, 0)));
-      if (!collapsedCats.has(c)) groups.forEach(g => groupTabs.append(gtab(g, true)));
-    }
-    fillSongList();
-  }
-  // Right pane: the songs in the chosen category. Clicking one loads it and goes to Setup.
-  function fillSongList() {
-    songList.innerHTML = '';
-    const songs = songsForGroup(currentGroup);
-    libTitle.textContent = currentGroup || 'Songs';
-    libSub.textContent = songs.length ? (songs.length + (songs.length === 1 ? ' song' : ' songs')) : '';
-    if (!songs.length) {
-      songList.append(h('li', { class: 'hint empty', tabIndex: 0, onclick: () => uploadBtn.click() },
-        'No songs yet — press here to upload MIDI files.'));
-      return;
-    }
-    songs.forEach(s => songList.append(songItem(s)));
-  }
+  /* ---- song catalogue + left rail + song grid: lives in pilib.js (PiLib). The app keeps the
+     "selected file" and tells PiLib to highlight it; PiLib calls back via onPick when a song is
+     chosen, and the app persists fav/played/best through PiLib's methods. ---- */
+  let selFile = null;
   function fillSetupHead() {
     if (!currentVM) return;
     $('setupTitle').textContent = currentVM.title || '—';
     const cv = document.querySelector('.setup-hero .cover');
-    if (cv) { cv.textContent = coverGlyph(currentVM); cv.style.background = coverBg(currentVM.title); }
+    if (cv) { cv.textContent = PiLib.coverGlyph(currentVM); cv.style.background = PiLib.coverBg(currentVM.title); }
     const shift = currentVM.transpose || 0;
     const stag = shift ? ' · ' + (shift > 0 ? '+' : '') + (shift / 12) + ' oct' : '';
     $('setupSub').textContent = currentVM.notes.length + ' notes' + stag;
     updateFavBtn();
   }
-  function updateFavBtn() {
-    const f = selFile, on = !!(f && lib[f] && lib[f].fav);
+  function updateFavBtn() {                        // the ☆ on the Setup screen reflects PiLib's metadata
+    const on = PiLib.isFav(selFile);
     favBtn.textContent = on ? '★' : '☆';
     favBtn.classList.toggle('on', on);
   }
-  function markPlayed(f) {
-    if (!f) return;
-    lib[f] = Object.assign({}, lib[f], { played: Date.now() / 1000 });
-    control({ cmd: 'played', file: f }).catch(() => {});
-    buildGroupTabs();                             // make Recently-played appear/update
-  }
-  favBtn.onclick = () => {
-    const f = selFile; if (!f) return;
-    const on = !(lib[f] && lib[f].fav);
-    lib[f] = Object.assign({}, lib[f], { fav: on });
-    control({ cmd: 'favorite', file: f, on: on }).catch(() => {});
-    updateFavBtn(); buildGroupTabs();
-  };
-  // Upload a MIDI from any device (raw body, filename in the query — no multipart needed).
-  uploadBtn.onclick = () => fileInput.click();
-  fileInput.onchange = async () => {
-    const files = Array.from(fileInput.files || []); if (!files.length) return;
-    const label = uploadBtn.textContent; uploadBtn.disabled = true;
-    let ok = 0, fail = 0, last = null;
-    for (let i = 0; i < files.length; i++) {
-      uploadBtn.textContent = 'Uploading ' + (i + 1) + '/' + files.length + '…';
-      try {
-        const buf = await files[i].arrayBuffer();
-        const r = await fetch('/upload?name=' + encodeURIComponent(files[i].name), { method: 'POST', body: buf });
-        if (!r.ok) throw 0;
-        const res = await r.json();
-        if (!res.file) throw 0;
-        ok++; last = res.file;
-      } catch (e) { fail++; }
-    }
-    await loadSongList();                          // refresh catalogue + library once
-    const s = last && allSongs.find(x => x.file === last);
-    if (s) { currentGroup = s.group; buildGroupTabs(); await selectSong(last); }
-    uploadBtn.textContent = fail ? ('Added ' + ok + ', ✕' + fail + ' bad') : ('✓ Added ' + ok);
-    setTimeout(() => { uploadBtn.textContent = label; }, 2500);
-    uploadBtn.disabled = false; fileInput.value = '';
-  };
+  favBtn.onclick = () => { if (selFile) { PiLib.toggleFav(selFile); updateFavBtn(); } };
 
   // Adopt the engine's authoritative snapshot (sent in the SSE 'hello' on connect / song change),
   // so a reconnecting or second client matches what the Pi is actually playing — not a default.
   function adoptHello(m) {
-    currentVM = m.vm; loadedFile = m.file || null; selFile = m.file || null;
+    currentVM = m.vm; loadedFile = m.file || null; selFile = m.file || null; PiLib.select(selFile);
     PiTV.setSong(m.vm); buildPartOptions(m.vm); showTranspose(m.vm.transpose || 0);
     songLabel.textContent = '♪ ' + m.vm.title + ' · ' + m.vm.notes.length + ' notes';
     if (m.speed != null) { speedSel.value = String(m.speed); PiTV.setClock(m.playing, m.speed); }
@@ -423,7 +285,7 @@
   async function selectSong(file) {
     const my = ++loadSeq;                               // claim this load; a newer pick invalidates us
     setPlayBtn(false);
-    selFile = file;
+    selFile = file; PiLib.select(file);                 // highlight it in the rail
     restoring = true;                                   // suppress auto-save during restore
     let s = {};
     try { s = await (await fetch('/settings?file=' + encodeURIComponent(file))).json(); } catch (e) {}
@@ -446,7 +308,7 @@
     PiTV.setPlay(currentPlay, currentHand);
     control({ cmd: 'speed', mult: +speedSel.value }).catch(() => {});   // sync engine
     control({ cmd: 'mode', mode: mode }).catch(() => {});
-    fillSongList();                                     // highlight the picked song
+    PiLib.select(file);                                 // re-highlight the picked song in the rail
     if (view !== 'stage') go('setup');                  // picking a song advances to its Setup
   }
 
@@ -465,7 +327,7 @@
     const wantPlay = !playing;            // decide BEFORE the await — `playing` may change during it
     setPlayBtn(wantPlay);
     PiTV.setClock(wantPlay, +speedSel.value);   // optimistic: pause/play feels instant locally
-    if (wantPlay) { markPlayed(loadedFile); endedShown = false; finish.hidden = true; closePause(); go('stage'); }  // fresh run
+    if (wantPlay) { PiLib.markPlayed(loadedFile); endedShown = false; finish.hidden = true; closePause(); go('stage'); }  // fresh run
     try {
       await control({ cmd: wantPlay ? 'play' : 'stop' });
       if (!wantPlay) openPause();          // manual stop -> the pause screen (quick tweaks / quit)
@@ -666,13 +528,7 @@
     finStars.textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
     finSub.textContent = good + ' good · ' + late + ' late · ' + early + ' early'
       + (miss ? ' · ' + miss + ' missed' : '') + (wrong ? ' · ' + wrong + ' wrong' : '');
-    if (loadedFile) {                               // best lives on the Pi so it follows the song to any client
-      const prev = (lib[loadedFile] && lib[loadedFile].best) || 0;
-      if (stars > prev) {
-        lib[loadedFile] = Object.assign({}, lib[loadedFile], { best: stars });
-        control({ cmd: 'save_settings', file: loadedFile, settings: { best: stars } }).catch(() => {});
-      }
-    }
+    if (loadedFile) PiLib.setBest(loadedFile, stars);   // best (persisted) follows the song; only writes if higher
     finish.hidden = false;
     if (kbd) setTimeout(() => focusAt(finAgain), 0);
   }
@@ -854,6 +710,7 @@
     noteoff: m => { PiTV.highlight(m.note, false); PiTV.setPlayed(m.note, false); PiSound.live(m.note, false); },
   });
 
-  loadSongList();
+  PiLib.init({ onPick: selectSong, control });   // PiLib calls selectSong when a song tile is chosen
+  PiLib.load();
   go('home');          // start at the Home screen (the root)
 })();
