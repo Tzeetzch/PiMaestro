@@ -375,7 +375,7 @@
     PiTV.setFreezeMode(mode === 'follow');
     if (m.hand === 'R' || m.hand === 'L') handSel.value = m.hand;
     if (Array.isArray(m.play)) { currentPlay = m.play.slice(); currentHand = m.hand || null; PiTV.setPlay(currentPlay, currentHand); }
-    if (typeof m.pi_muted === 'boolean') setPiMuteBtn(m.pi_muted);   // reflect the engine's real mute state
+    if (typeof m.pi_muted === 'boolean') PiSound.setPiMute(m.pi_muted);   // reflect the engine's real mute state
     updateModeHint();
   }
 
@@ -410,7 +410,7 @@
       const shift = vm.transpose || 0;
       const stag = shift ? ' · ' + (shift > 0 ? '+' : '') + (shift / 12) + ' oct' : '';
       songLabel.textContent = '♪ ' + vm.title + ' · ' + vm.notes.length + ' notes' + stag;
-      if (soundOn) soundResync();                  // new song -> reload instruments + re-aim the scheduler
+      PiSound.resync();                            // new song -> reload instruments + re-aim the scheduler
       return true;
     } catch (e) {
       songLabel.textContent = 'could not load song';
@@ -455,7 +455,7 @@
     playBtn.innerHTML = on ? '&#10073;&#10073; Pause' : '&#9654; Play';   // it pauses (opens the pause menu), so say so
     playBtn.classList.toggle('on', on);
     if (!on) { countin.hidden = true; if (countin.firstChild) countin.firstChild.textContent = ''; }  // every stop path clears the 3-2-1
-    if (typeof soundOn !== 'undefined' && soundOn) { on ? startSoundTimer() : stopSoundTimer(); }      // scheduler runs only while playing
+    PiSound.onPlay(on);                                  // scheduler runs only while playing
   }
 
   /* ---- controls ---- */
@@ -605,163 +605,15 @@
   applyNames();
   namesBtn.onclick = () => { names = !names; localStorage.setItem('pitv.names', names ? 'on' : 'off'); applyNames(); };
 
-  /* ---- browser sound (optional; for a device that can't hear the Pi): a pluggable synth fed from
-     the local clock + your live keys. Two engines: 'rich' = WebAudioFont (real sampled instruments,
-     loaded on demand, Songsterr-style) and 'light' = WebAudioTinySynth (oscillator — tiny + CPU-cheap,
-     for weak devices). The Pi stays the real instrument; this is just a local speaker. Backing is
-     scheduled from the view-model and held at the next gate in Follow. ---- */
-  const sndHere = $('sndHere'), piMute = $('piMute'), sndRow = $('sndRow'), muteRow = $('muteRow'),
-        sndQual = $('sndQual'), sndQualRow = $('sndQualRow');
-  let soundOn = false, schedTimer = null, schedPtr = 0, piMuted = false, soundLastT = 0, audioCtx = null;
-  let engineKind = localStorage.getItem('pitv.sndEngine') || 'rich';
-  let engine = null;
-  const SND_LOOKAHEAD = 0.2;
-  function isMine(nt) {                                 // notes YOU cover -> sonified live, not scheduled
+  /* ---- browser sound lives in sound.js now (PiSound: SoundEngine base + Light/Rich subclasses,
+     scheduler, and the sound/mute UI). It reads the song + "which notes are mine" through the context
+     below; we drive it via PiSound.resync / live / onPlay / heartbeat / setPiMute. ---- */
+  function isMine(nt) {                                 // notes YOU play live -> not scheduled as backing
     if (mode === 'listen' || !currentPlay.includes(nt.ch)) return false;
     if (currentHand && nt.hand !== currentHand) return false;
     const [lo, hi] = kbdRange(); return nt.n >= lo && nt.n <= hi;
   }
-  function firstNoteAtOrAfter(t) {
-    const ns = (currentVM && currentVM.notes) || []; let lo = 0, hi = ns.length;
-    while (lo < hi) { const m = (lo + hi) >> 1; if (ns[m].t < t) lo = m + 1; else hi = m; } return lo;
-  }
-  function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
-
-  // Pluggable browser synth: two engines share ONE contract behind a SoundEngine base class —
-  // the same base/subclass shape as the NotationView staff hierarchy in render.js.
-  class SoundEngine {
-    constructor() { this.loading = null; }
-    async ensure() {}                                    // load lib + open audio context + set programs
-    programs() {}                                        // (pre)load the instruments this song needs
-    now() { return audioCtx ? audioCtx.currentTime : 0; }
-    schedule(ch, n, v, at, dur) {}                       // queue a backing note at audio-time `at`
-    live(note, on, vel) {}                               // a key you pressed, right now
-    reset() {}                                           // drop everything queued/held
-  }
-
-  // Light — WebAudioTinySynth (oscillator GM, single 62KB file, very CPU-cheap).
-  class LightEngine extends SoundEngine {
-    constructor() { super(); this.synth = null; }
-    async ensure() {
-      if (!window.WebAudioTinySynth) { this.loading = this.loading || loadScript('vendor/webaudio-tinysynth.js'); await this.loading; }
-      if (!this.synth) this.synth = new WebAudioTinySynth({ quality: 1, useReverb: 1, voices: 64 });
-      audioCtx = this.synth.getAudioContext();
-      if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
-      this.programs();
-    }
-    programs() {
-      if (!this.synth || !currentVM) return;
-      (currentVM.parts || []).forEach(p => { try { this.synth.setProgram(p.ch, p.program || 0); } catch (e) {} });
-      try { this.synth.setProgram(0, 0); } catch (e) {}     // live keys = grand piano on ch0
-    }
-    now() { return this.synth.getAudioContext().currentTime; }
-    schedule(ch, n, v, at, dur) { this.synth.noteOn(ch, n, v, at); this.synth.noteOff(ch, n, at + dur); }
-    live(note, on, vel) { if (on) this.synth.noteOn(0, note, vel || 96, 0); else this.synth.noteOff(0, note, 0); }
-    reset() { try { this.synth.reset(); } catch (e) {} }
-  }
-
-  // Rich — WebAudioFont: real sampled instruments, served from the Pi (web/waf/), loaded on demand.
-  const WAF_BASE = '/waf/';
-  class RichEngine extends SoundEngine {
-    constructor() { super(); this.player = null; this.ch = {}; this.drums = {}; this.env = {}; }
-    async ensure() {
-      if (!window.WebAudioFontPlayer) { this.loading = this.loading || loadScript('vendor/WebAudioFontPlayer.js'); await this.loading; }
-      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === 'suspended') await audioCtx.resume();
-      if (!this.player) this.player = new WebAudioFontPlayer();
-      await this.programs();
-    }
-    _src(info) { return WAF_BASE + info.url.split('/').pop(); }
-    _load(info) {
-      const v = info.variable;
-      if (window[v]) return Promise.resolve(window[v]);
-      return new Promise(res => { this.player.loader.startLoad(audioCtx, this._src(info), v); this.player.loader.waitLoad(() => res(window[v] || null)); });
-    }
-    async programs() {                                   // preload the instruments THIS song uses
-      if (!this.player || !currentVM) return;
-      this.ch = {};
-      const L = this.player.loader, jobs = [];
-      jobs.push(this._load(L.instrumentInfo(L.findInstrument(0))).then(p => { this.ch[0] = p; }));   // live keys
-      (currentVM.parts || []).forEach(part => {
-        if (part.ch === 9) return;                       // drums handled per-note below
-        jobs.push(this._load(L.instrumentInfo(L.findInstrument(part.program || 0))).then(p => { this.ch[part.ch] = p; }));
-      });
-      await Promise.all(jobs).catch(() => {});
-    }
-    now() { return audioCtx.currentTime; }
-    schedule(ch, n, v, at, dur) {
-      try {
-        if (ch === 9) {                                  // percussion: one sample per drum note
-          const L = this.player.loader, di = L.findDrum(n); if (di < 0) return;
-          const info = L.drumInfo(di), preset = window[info.variable] || this.drums[n];
-          if (!preset) { this._load(info).then(p => { this.drums[n] = p; }); return; }   // first hit loads (silent), then ready
-          this.player.queueWaveTable(audioCtx, audioCtx.destination, preset, at, info.pitch, dur, v / 127);
-        } else {
-          const preset = this.ch[ch]; if (!preset) return;
-          this.player.queueWaveTable(audioCtx, audioCtx.destination, preset, at, n, dur, v / 127);
-        }
-      } catch (e) {}
-    }
-    live(note, on, vel) {
-      try {
-        const preset = this.ch[0]; if (!preset) return;
-        if (on) { if (this.env[note]) this.env[note].cancel(); this.env[note] = this.player.queueWaveTable(audioCtx, audioCtx.destination, preset, audioCtx.currentTime, note, 9999, (vel || 96) / 127); }
-        else if (this.env[note]) { try { this.env[note].cancel(); } catch (e) {} delete this.env[note]; }
-      } catch (e) {}
-    }
-    reset() { try { this.player.cancelQueue(audioCtx); } catch (e) {} this.env = {}; }
-  }
-
-  const lightEngine = new LightEngine(), richEngine = new RichEngine();
-  function pickEngine() { return engineKind === 'light' ? lightEngine : richEngine; }
-  async function ensureSound() { engine = pickEngine(); await engine.ensure(); }
-  function schedTick() {                                // schedule backing a hair ahead of the clock
-    if (!soundOn || !engine || !currentVM) return;
-    const st = PiTV.clockState(); if (!st.playing) return;
-    const audioNow = engine.now(), ns = currentVM.notes;
-    while (schedPtr < ns.length) {
-      const nt = ns[schedPtr];
-      if (nt.t >= st.limit) break;                      // hold backing at the next gate (Follow)
-      if (nt.t > st.t + SND_LOOKAHEAD) break;           // beyond the lookahead window
-      schedPtr++;
-      if (nt.t < st.t - 0.1 || isMine(nt)) continue;     // already past, or you play it live
-      const at = audioNow + Math.max(0, (nt.t - st.t) / st.speed);
-      engine.schedule(nt.ch, nt.n, nt.v || 80, at, Math.max(0.05, nt.d / st.speed));
-    }
-  }
-  function soundResync() {                              // after seek / loop / song change: drop + re-aim
-    if (!soundOn || !engine) return;
-    engine.reset(); engine.programs(); schedPtr = firstNoteAtOrAfter(PiTV.clockState().t);
-  }
-  function liveSound(note, on, vel) { if (soundOn && engine) engine.live(note, on, vel); }   // your pressed keys
-  function startSoundTimer() { if (soundOn && !schedTimer) schedTimer = setInterval(schedTick, 60); }
-  function stopSoundTimer() { if (schedTimer) { clearInterval(schedTimer); schedTimer = null; } }
-  sndRow.hidden = false; muteRow.hidden = false; if (sndQualRow) sndQualRow.hidden = false;
-  sndHere.onclick = async () => {
-    if (!soundOn) {
-      sndHere.innerHTML = '&#8987; …';
-      try { await ensureSound(); } catch (e) { sndHere.innerHTML = 'sound load failed'; return; }
-      soundOn = true; sndHere.classList.add('on'); sndHere.innerHTML = '&#128266; On';
-      schedPtr = firstNoteAtOrAfter(PiTV.clockState().t);
-      if (PiTV.clockState().playing) startSoundTimer();   // idle? don't burn CPU — armed on next Play
-    } else {
-      soundOn = false; sndHere.classList.remove('on'); sndHere.innerHTML = '&#128266; Off';
-      stopSoundTimer(); if (engine) engine.reset();
-    }
-  };
-  if (sndQual) {
-    sndQual.value = engineKind;
-    sndQual.onchange = async () => {                    // hot-swap engine; keep playing if sound is on
-      engineKind = sndQual.value; localStorage.setItem('pitv.sndEngine', engineKind);
-      if (soundOn) { if (engine) engine.reset(); try { await ensureSound(); schedPtr = firstNoteAtOrAfter(PiTV.clockState().t); } catch (e) {} }
-    };
-  }
-  function setPiMuteBtn(on) {
-    piMuted = on;
-    piMute.classList.toggle('on', piMuted);
-    piMute.innerHTML = piMuted ? '&#128263; Pi muted' : '&#128264; Mute Pi';
-  }
-  piMute.onclick = () => { setPiMuteBtn(!piMuted); control({ cmd: 'pi_mute', on: piMuted }).catch(() => {}); };
+  PiSound.init({ getVM: () => currentVM, isMine, control });
 
   // Timing feedback: running tallies + an instant per-note flash (early / good / late).
   let timingTally = null, flashing = false, flashTimer = null;
@@ -975,10 +827,8 @@
       }
       lastT = m.t;                                         // local clock: pos is just a correction heartbeat
       if (m.gates) PiTV.setGates(m.gates);                 // hello carries gates
-      const jumpedBack = m.t < soundLastT - 0.3;           // seek/loop/reset went backward
-      soundLastT = m.t;
       PiTV.correctNow(m.t); PiTV.setClock(m.playing, m.speed);
-      if (jumpedBack) soundResync();                       // AFTER the clock snaps, re-aim the scheduler
+      PiSound.heartbeat(m.t);                              // re-aims the backing scheduler on a backward jump
       if (playing && m.t < 0) { const n = Math.min(3, Math.ceil(-m.t)); countin.firstChild.textContent = n > 0 ? n : ''; countin.hidden = n <= 0; }
       else if (!countin.hidden) countin.hidden = true;
       const d = currentVM ? currentVM.duration : 0;
@@ -1003,8 +853,8 @@
       gate: m => PiTV.clearGateUpto(m.gi),                 // freeze cursor cleared -> local clock resumes here
       rating: m => { flashRating(m.kind, m.off, m.note); if (m.gate != null) PiTV.setRated(m.gate, m.kind); },
       gates: m => PiTV.setGates(m.gates),                  // gate set changed (load / part / range / mode)
-      noteon: m => { PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true); liveSound(m.note, true, m.velocity); },
-      noteoff: m => { PiTV.highlight(m.note, false); PiTV.setPlayed(m.note, false); liveSound(m.note, false); },
+      noteon: m => { PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true); PiSound.live(m.note, true, m.velocity); },
+      noteoff: m => { PiTV.highlight(m.note, false); PiTV.setPlayed(m.note, false); PiSound.live(m.note, false); },
     };
     es.onmessage = ev => { const m = JSON.parse(ev.data); const fn = handlers[m.type]; if (fn) fn(m); };
   })();
