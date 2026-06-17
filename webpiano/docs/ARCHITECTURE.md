@@ -31,9 +31,49 @@ MIDI keyboard ──ALSA──▶ FluidSynth (TCP :9800, -a pipewire) ──▶ 
 - **engine/notation.py** — pure pitch→stave-position logic, ported from PianoBooster's StavePosition.cpp.
 - **engine/conductor.py** — the brain. Owns the clock, Follow-You gates, accompaniment scheduling,
   early/good/late rating, loop/seek/speed/transpose. Streams state through a callback the server broadcasts.
-- **web/render.js** — canvas view (notation + falling-notes game). Consumes the VM; **never recomputes
-  timing or musical layout**. Precomputes its engraving layout once in `setSong`.
-- **web/app.js** — orchestration: the menu wizard, SSE client, controls, per-song settings, local sound.
+- **web/render.js** (PiTV) — canvas view (notation + falling-notes game). Consumes the VM; **never
+  recomputes timing or musical layout**. Precomputes its engraving layout once in `setSong`.
+- **web/app.js** — the **composition root** + play-flow orchestrator: the load/select state machine,
+  play/pause/reset, the pause + end-of-song reward screens, the screen router, and the SSE handlers.
+  The browser logic was carved into single-concern boxes (below); `app.js` is the only one that knows
+  the others by name and wires them together.
+- **web/{sound,sse,pilib,nav,transport,setup}.js** — the carved boxes (PiSound / PiSse / PiLib / PiNav /
+  PiTransport / PiSetup). See **Box contracts** below.
+
+## Box contracts
+
+The browser logic is split into single-concern modules ("boxes"). The rule that keeps them honest:
+
+> **Only a composition root may know other boxes by name.** There are two roots — `app.js` (browser)
+> and `Conductor` + `server.py` (Pi). They wire the boxes together. **Every other box names no sibling.**
+> Anything it needs from outside arrives as an injected input via `init({...})`; anything it produces
+> leaves as a declared output (a callback or a pulled getter). No box reaches for a sibling global.
+
+A box's contract is **IN** (what it's handed), **OUT** (what it emits), and **must-never-know**. Enforced
+mechanically: grepping each module for `Pi<Sibling>.` returns nothing except in `app.js`.
+
+| Box (file) | IN (injected / driven) | OUT | Must never know |
+|---|---|---|---|
+| **PiTV** (render.js) | `setSong`, `setPlay`, gate/clock/view/loop setters, `highlight`/`flashWrong` | `clockState()` (pulled) | songs, engine, sound, nav |
+| **PiSound** (sound.js) | `getVM`, `isMine`, `control`, `getClock` | audio out; `pi_mute` cmd | PiTV, library, nav |
+| **PiSse** (sse.js) | `start(handlers)`, `reconnect()` | `handlers[type](msg)` dispatch | what the messages *mean* |
+| **PiLib** (pilib.js) | `init({onPick, control})`, `load`, `select` | `onPick(file)` | engine internals, the stage |
+| **PiNav** (nav.js) | `getView/Playing/VM`, `control`, `go`, `openPause` | focus moves + element actions | what a screen *contains* |
+| **PiTransport** (transport.js) | `getVM`, `control`, `showLoop` | seek / loop commands | PiTV, the play-flow |
+| **PiSetup** (setup.js) | `getVM/Play/SelFile`, `control`, `coverGlyph/coverBg/isFav`, `onPlay` | `onPlay(channels)` | PiLib, PiTV, the stage |
+| **app.js** | — (the root) | — | *(may know every box)* |
+
+The Pi side already obeys the same rule with the same two-root shape: **ScoreKeeper / _Synth / Song /
+midifile / notation** are pure (know nothing of each other); **Conductor** composes ScoreKeeper + _Synth;
+**server.py** composes Conductor + the catalogue/settings/power stores.
+
+- **engine/scorekeeper.py** (ScoreKeeper) — the timing judge. IN: `reset`, `record_press`, `wrong_note`,
+  `finalize(t, gates, now)`, `tally`. OUT: `rating` frames via the `on_state` callback. Knows nothing of
+  the clock or the gates — the conductor passes them in. Split out so gating ≠ scoring.
+
+Known seams (not yet boxed): `handSel`/`modeSel`/`#seek` are DOM nodes two boxes both write (app's state
+machine + PiSetup/PiTransport); and the performance settings (`currentVM/Play/mode/transpose/split`) are
+loose vars in `app.js` exposed through getters rather than a first-class `PiSession` box.
 
 ## Load-time precompute vs play-time stream (the performance contract)
 
