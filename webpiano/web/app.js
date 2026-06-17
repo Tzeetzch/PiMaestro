@@ -319,7 +319,7 @@
     if (currentHand && nt.hand !== currentHand) return false;
     const [lo, hi] = kbdRange(); return nt.n >= lo && nt.n <= hi;
   }
-  PiSound.init({ getVM: () => currentVM, isMine, control });
+  PiSound.init({ getVM: () => currentVM, isMine, control, getClock: () => PiTV.clockState() });
 
   // Timing feedback: running tallies + an instant per-note flash (early / good / late).
   let timingTally = null, flashing = false, flashTimer = null;
@@ -411,7 +411,7 @@
     getView: () => view, getPlaying: () => playing, getVM: () => currentVM, getLastT: () => lastT,
     control, go, openPause,
   });
-  PiTransport.init({ getVM: () => currentVM, control });   // click-to-seek + loop drilling
+  PiTransport.init({ getVM: () => currentVM, control, showLoop: (a, b) => PiTV.setLoop(a, b) });   // click-to-seek + loop drilling
   PiSetup.init({                                           // the Setup screen: part dropdown + instruments + hero
     getVM: () => currentVM, getPlay: () => currentPlay, getSelFile: () => selFile, control,
     onPlay: (channels) => { setPlayChannels(channels, null); saveCurrent(); },   // player re-picked their tracks

@@ -3,7 +3,7 @@
    the cache is only an offline fallback for the static shell. Registers only on a secure
    context (HTTPS / localhost) — over plain http on the LAN the page still works, just not
    as an installable PWA. */
-const CACHE = 'pimaestro-v8';
+const CACHE = 'pimaestro-v9';
 const SHELL = ['/', '/index.html', '/app.js', '/render.js', '/sound.js', '/sse.js', '/pilib.js', '/nav.js', '/transport.js', '/setup.js', '/vendor/webaudio-tinysynth.js',
   '/remote', '/remote.html', '/app.webmanifest', '/remote.webmanifest',
   '/icon-192.png', '/icon-512.png', '/icon-app-192.png', '/icon-app-512.png'];

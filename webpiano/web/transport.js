@@ -5,12 +5,14 @@
    and the click handler on #seek; the app's pos heartbeat still paints the bar's fill/time readout.
 
    Exposed as a global PiTransport (like PiTV / PiSound / PiSse / PiLib / PiNav). The app injects the
-   current song (bar table + duration) and control (to tell the engine); we mirror the loop on the
-   canvas through PiTV.setLoop. The app calls buildLoop on entering Setup and clearLoop on a new song. */
+   current song (bar table + duration), control (to tell the engine), and showLoop (to mirror the loop
+   on the canvas). The app calls buildLoop on entering Setup and clearLoop on a new song. */
 const PiTransport = (function () {
   const $ = id => document.getElementById(id);
   const seekEl = $('seek'), loopPanel = $('loopPanel');
-  let ctx = { getVM: () => null, control: () => Promise.resolve() };
+  // Black-box contract: PiTransport names no sibling module. It mirrors the loop on the canvas through
+  // the injected showLoop(start,end) (the app wires it to PiTV); we never reach for PiTV ourselves.
+  let ctx = { getVM: () => null, control: () => Promise.resolve(), showLoop: () => {} };
   let loopOn = false, loopFromEl = null, loopToEl = null, loopToggleEl = null;
 
   function barCount() { const vm = ctx.getVM(); const b = vm && vm.bars; return (b && b.length) ? b.length - 1 : 0; }
@@ -19,15 +21,15 @@ const PiTransport = (function () {
   function barEnd(n) { const vm = ctx.getVM(), b = vm.bars, i = Math.min(clampBar(n), b.length - 1); return Math.min(b[i] != null ? b[i] : vm.duration, vm.duration); }
   function applyLoop() {
     const vm = ctx.getVM();
-    if (!vm || !loopOn) { ctx.control({ cmd: 'loop', start: null, end: null }).catch(() => {}); PiTV.setLoop(null, null); return; }
+    if (!vm || !loopOn) { ctx.control({ cmd: 'loop', start: null, end: null }).catch(() => {}); ctx.showLoop(null, null); return; }
     let from = clampBar(+loopFromEl.value), to = clampBar(+loopToEl.value);
     if (to < from) { to = from; loopToEl.value = to; }
     loopFromEl.value = from;
     const start = barStart(from), end = barEnd(to);
     ctx.control({ cmd: 'loop', start, end }).catch(() => {});
-    PiTV.setLoop(start, end);
+    ctx.showLoop(start, end);
   }
-  function clearLoop() { loopOn = false; if (loopToggleEl) loopToggleEl.classList.remove('on'); ctx.control({ cmd: 'loop', start: null, end: null }).catch(() => {}); PiTV.setLoop(null, null); }
+  function clearLoop() { loopOn = false; if (loopToggleEl) loopToggleEl.classList.remove('on'); ctx.control({ cmd: 'loop', start: null, end: null }).catch(() => {}); ctx.showLoop(null, null); }
   function buildLoop() {
     loopPanel.innerHTML = '';
     const total = barCount();

@@ -16,8 +16,10 @@ const PiSound = (function () {
   let engineKind = localStorage.getItem('pitv.sndEngine') || 'rich';
   let engine = null;
   const SND_LOOKAHEAD = 0.2;
-  // injected by the app: the current view-model + whether a note is the player's (live, not scheduled)
-  let ctx = { getVM: () => null, isMine: () => false, control: () => Promise.resolve() };
+  // Black-box contract: PiSound names no sibling module. Injected by the app — the current view-model,
+  // whether a note is the player's (live, not scheduled), the engine channel, and getClock: the local
+  // render clock {playing, t} the scheduler aims at (the app wires it to PiTV; we never reach for PiTV).
+  let ctx = { getVM: () => null, isMine: () => false, control: () => Promise.resolve(), getClock: () => ({ playing: false, t: 0 }) };
 
   function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
 
@@ -117,7 +119,7 @@ const PiSound = (function () {
   function schedTick() {                                // schedule backing a hair ahead of the clock
     const vm = ctx.getVM();
     if (!soundOn || !engine || !vm) return;
-    const st = PiTV.clockState(); if (!st.playing) return;
+    const st = ctx.getClock(); if (!st.playing) return;
     const audioNow = engine.now(), ns = vm.notes;
     while (schedPtr < ns.length) {
       const nt = ns[schedPtr];
@@ -131,7 +133,7 @@ const PiSound = (function () {
   }
   function resync() {                                   // after seek / loop / song change: drop + re-aim
     if (!soundOn || !engine) return;
-    engine.reset(); engine.programs(); schedPtr = firstNoteAtOrAfter(PiTV.clockState().t);
+    engine.reset(); engine.programs(); schedPtr = firstNoteAtOrAfter(ctx.getClock().t);
   }
   function startTimer() { if (soundOn && !schedTimer) schedTimer = setInterval(schedTick, 60); }
   function stopTimer() { if (schedTimer) { clearInterval(schedTimer); schedTimer = null; } }
@@ -142,8 +144,8 @@ const PiSound = (function () {
       sndHere.innerHTML = '&#8987; …';
       try { await ensureSound(); } catch (e) { sndHere.innerHTML = 'sound load failed'; return; }
       soundOn = true; sndHere.classList.add('on'); sndHere.innerHTML = '&#128266; On';
-      schedPtr = firstNoteAtOrAfter(PiTV.clockState().t);
-      if (PiTV.clockState().playing) startTimer();        // idle? don't burn CPU — armed on next Play
+      schedPtr = firstNoteAtOrAfter(ctx.getClock().t);
+      if (ctx.getClock().playing) startTimer();        // idle? don't burn CPU — armed on next Play
     } else {
       soundOn = false; sndHere.classList.remove('on'); sndHere.innerHTML = '&#128266; Off';
       stopTimer(); if (engine) engine.reset();
@@ -153,7 +155,7 @@ const PiSound = (function () {
     sndQual.value = engineKind;
     sndQual.onchange = async () => {                    // hot-swap engine; keep playing if sound is on
       engineKind = sndQual.value; localStorage.setItem('pitv.sndEngine', engineKind);
-      if (soundOn) { if (engine) engine.reset(); try { await ensureSound(); schedPtr = firstNoteAtOrAfter(PiTV.clockState().t); } catch (e) {} }
+      if (soundOn) { if (engine) engine.reset(); try { await ensureSound(); schedPtr = firstNoteAtOrAfter(ctx.getClock().t); } catch (e) {} }
     };
   }
   function setPiMute(on) {

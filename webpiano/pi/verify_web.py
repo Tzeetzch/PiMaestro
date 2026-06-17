@@ -141,6 +141,10 @@ def main():
         seekok = ev("try{document.getElementById('seek').click(); 'ok'}catch(e){'THROW: '+e}")
         if seekok != "ok":
             problems.append("seek click threw: " + str(seekok))
+        # toggle the loop on: exercises applyLoop -> injected showLoop -> PiTV.setLoop (must not throw)
+        loopok = ev("try{var b=document.querySelector('#loopPanel button'); if(b)b.click(); 'ok'}catch(e){'THROW: '+e}")
+        if loopok != "ok":
+            problems.append("loop toggle threw: " + str(loopok))
         print("transport -> loop hint:", loopui, "| loop button:", loopbtn, "| seek click:", seekok)
         # setup screen: PiSetup built the Part dropdown + the instruments panel + the hero
         partopts = ev("document.getElementById('handSel').options.length")
