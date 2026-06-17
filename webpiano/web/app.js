@@ -156,6 +156,7 @@
     const v = handSel.value;
     if (v === 'R') return vm.rightChan != null ? [vm.rightChan] : [];
     if (v === 'L') return vm.leftChan != null ? [vm.leftChan] : [];
+    if (v === 'drums') return [9];                        // play the drum kit (-> percussion staff)
     if (v && v.indexOf('ch:') === 0) return [parseInt(v.slice(3), 10)];
     return [...new Set([vm.rightChan, vm.leftChan].filter(c => c != null))];   // 'both'
   }
@@ -172,13 +173,16 @@
     handSel.innerHTML = '';
     const add = (val, label) => { const o = document.createElement('option'); o.value = val; o.textContent = label; handSel.appendChild(o); };
     const r = vm.rightChan, l = vm.leftChan;
-    add('both', 'Both hands');
-    if (r != null || l != null) { add('R', 'Right hand'); add('L', 'Left hand'); }   // always pickable now
+    const hasPiano = (r != null || l != null);
+    const hasDrums = (vm.parts || []).some(p => p.ch === 9);
+    if (hasPiano) { add('both', 'Both hands'); add('R', 'Right hand'); add('L', 'Left hand'); }
+    if (hasDrums) add('drums', 'Drums');                  // play the kit -> drum notation
     (vm.parts || []).forEach(p => {                       // any other instrument you could play
       if (p.ch === 9 || p.ch === r || p.ch === l) return; // drums / piano part already covered
       add('ch:' + p.ch, 'Play: ' + (GM_NAMES[p.program] || ('Part ' + p.ch)));
     });
-    handSel.value = 'both';
+    if (!handSel.options.length) add('both', 'All');
+    handSel.value = hasPiano ? 'both' : (hasDrums ? 'drums' : handSel.options[0].value);   // drum-only -> Drums
   }
   // Set which part the player covers (channels + optional hand); the rest becomes background.
   function setPlayChannels(ch, hand) {
@@ -241,10 +245,17 @@
       onclick: () => { currentGroup = g; buildGroupTabs(); } },
       h('span', null, subLabel(g)), h('span', { class: 'count' }, String(songsForGroup(g).length)));
   }
+  // Inline SVG (currentColor) so it renders on the Pi's Chromium, which has no emoji font.
+  const CAT_ICON = {
+    Drums: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="17" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="7.5" cy="5" r="1.7" fill="currentColor" stroke="none"/><line x1="16.4" y1="6.4" x2="5" y2="20"/><line x1="8.1" y1="6.4" x2="19" y2="20"/></svg>',
+    Piano: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="7.3" y="5" width="3" height="6.5" rx="0.5" fill="currentColor" stroke="none"/><rect x="13.7" y="5" width="3" height="6.5" rx="0.5" fill="currentColor" stroke="none"/></svg>',
+    More: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6.5" cy="17.5" r="2.4" fill="currentColor" stroke="none"/><circle cx="16.5" cy="15.5" r="2.4" fill="currentColor" stroke="none"/><path d="M8.9 17.5V6.5l9.6-2v11"/></svg>',
+  };
   function gcat(c, count) {
     const open = !collapsedCats.has(c);
     return h('button', { class: 'gcat' + (open ? ' open' : ''), tabIndex: 0, onclick: () => toggleCat(c) },
       h('span', { class: 'chev' }, open ? '▾' : '▸'),
+      h('span', { class: 'cicon', html: CAT_ICON[c] || '' }),
       h('span', { class: 'gcat-name' }, c),
       h('span', { class: 'count' }, String(count)));
   }
