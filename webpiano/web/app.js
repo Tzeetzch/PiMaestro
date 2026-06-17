@@ -773,13 +773,16 @@
       + (t.miss ? ' · ' + t.miss + ' miss' : '') + (t.wrong ? ' · ' + t.wrong + ' wrong' : '');
     scoreEl.className = 'badge';
   }
+  const RATING = {            // verdict -> badge label + css class (was two parallel lookup maps)
+    early: { label: 'EARLY', cls: 'r-early' }, good: { label: 'GOOD!', cls: 'good' },
+    late: { label: 'LATE', cls: 'low' }, miss: { label: 'MISS', cls: 'r-miss' }, wrong: { label: 'WRONG', cls: 'r-miss' },
+  };
   function flashRating(kind, off, note) {
     if (kind === 'wrong' && note != null) PiTV.flashWrong(note);   // flash the mis-pressed key red on the piano
-    const label = { early: 'EARLY', good: 'GOOD!', late: 'LATE', miss: 'MISS', wrong: 'WRONG' }[kind] || kind;
-    const cls = { early: 'r-early', good: 'good', late: 'low', miss: 'r-miss', wrong: 'r-miss' }[kind] || '';
+    const r = RATING[kind] || { label: kind, cls: '' };
     const ms = (off != null && kind !== 'good' && kind !== 'wrong') ? ' ' + (off > 0 ? '+' : '') + Math.round(off * 1000) + 'ms' : '';
-    scoreEl.textContent = label + ms;
-    scoreEl.className = 'badge ' + cls;
+    scoreEl.textContent = r.label + ms;
+    scoreEl.className = 'badge ' + r.cls;
     flashing = true; clearTimeout(flashTimer);
     flashTimer = setTimeout(() => { flashing = false; showTiming(); }, 700);
   }
