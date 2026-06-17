@@ -108,7 +108,7 @@ def main():
               "| scripts:", ev("document.scripts.length"), "| body len:", ev("document.body? document.body.innerHTML.length : -1"))
 
         problems = []
-        mods = ev("[typeof PiTV,typeof PiSound,typeof PiSse,typeof PiLib,typeof PiNav,typeof PiTransport].join(',')")
+        mods = ev("[typeof PiTV,typeof PiSound,typeof PiSse,typeof PiLib,typeof PiNav,typeof PiTransport,typeof PiSetup].join(',')")
         if "undefined" in (mods or "undefined"):
             problems.append(f"a module is missing: {mods}")
 
@@ -142,11 +142,23 @@ def main():
         if seekok != "ok":
             problems.append("seek click threw: " + str(seekok))
         print("transport -> loop hint:", loopui, "| loop button:", loopbtn, "| seek click:", seekok)
+        # setup screen: PiSetup built the Part dropdown + the instruments panel + the hero
+        partopts = ev("document.getElementById('handSel').options.length")
+        instrrows = ev("document.querySelectorAll('#instrPanel .row, #instrPanel .hint').length")
+        herotitle = ev("(document.getElementById('setupTitle')||{}).textContent")
+        modehint = ev("(document.getElementById('modeHint')||{}).textContent || ''")
+        if not partopts:
+            problems.append("Part dropdown empty (PiSetup.buildPartOptions)")
+        if not instrrows:
+            problems.append("instruments panel empty (PiSetup.buildInstr)")
+        if not (modehint and len(modehint) > 5):
+            problems.append("mode hint empty (PiSetup.updateModeHint)")
+        print("setup -> part opts:", partopts, "| instr rows:", instrrows, "| hero:", herotitle, "| mode hint set:", bool(modehint))
 
         errs = ev("JSON.stringify(window.__errs||[])")
         errlist = json.loads(errs or "[]")
 
-        print("modules (PiTV,PiSound,PiSse,PiLib,PiNav,PiTransport):", mods)
+        print("modules (PiTV,PiSound,PiSse,PiLib,PiNav,PiTransport,PiSetup):", mods)
         print("after ArrowDown -> kbd:", kbd, "| active:", active, "| nav-here:", navhere)
         print("after pick -> setup shown:", setup, "| title:", title)
         print("JS errors / rejections:", errlist if errlist else "none")
