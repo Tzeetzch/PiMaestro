@@ -139,11 +139,15 @@ def midi_reader(port):
 
 
 # ---------------------------------------------------------------- song catalogue
-def _difficulty(path):
-    """Derive a difficulty/group label from the folder name (e.g. '2_-_Easy' -> 'Easy')."""
-    parent = os.path.basename(os.path.dirname(path))
-    m = re.match(r"\d+\s*-\s*(.+)", parent.replace("_", " ").strip())
-    return m.group(1).strip() if m else (parent or "Songs")
+def _group_label(path):
+    """(order, display) from the folder name. A LEADING number orders groups and is hidden from the
+    label, so folders like '21 Piano - Classical' show as 'Piano - Classical' and sort by 21.
+    Unnumbered folders sort last (900), with underscores prettified to spaces."""
+    parent = os.path.basename(os.path.dirname(path)).replace("_", " ").strip()
+    m = re.match(r"(\d+)\s*[-.]*\s*(.+)", parent)
+    if m:
+        return int(m.group(1)), m.group(2).strip()
+    return 900, (parent or "Songs")
 
 
 def list_songs():
@@ -155,12 +159,14 @@ def list_songs():
             for fn in files:
                 if fn.lower().endswith((".mid", ".midi")):
                     full = os.path.realpath(os.path.join(dirpath, fn))   # canonical = library key
+                    order, label = _group_label(full)
                     songs.append({
                         "title": os.path.splitext(fn)[0].replace("_", " "),
                         "file": full,
-                        "group": _difficulty(full),
+                        "group": label,
+                        "_o": order,                                      # hidden: group sort order
                     })
-    songs.sort(key=lambda s: (s["group"], s["title"]))
+    songs.sort(key=lambda s: (s["_o"], s["group"], s["title"]))           # ordered groups, then title
     return songs
 
 
