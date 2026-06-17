@@ -83,8 +83,11 @@ const PiTV = (function () {
   }
   function setSong(vm) {
     song = vm; now = -LOOKAHEAD; setWanted([]); dirty = true; staticDirty = true;
-    // Drum chart? (all notes on GM channel 10 -> render the percussion staff instead of the grand staff)
-    drumMode = !!(vm && vm.notes && vm.notes.length && vm.notes.every(n => n.ch === 9));
+    // Drum chart? render the percussion staff when the notes on screen are all GM channel-10 drums —
+    // either a drum-only file, or the drum PART of a full song once it's the selected part (see setPlay).
+    vm._allDrum = !!(vm.notes && vm.notes.length && vm.notes.every(n => n.ch === 9));
+    vm._hasDrums = !!(vm.notes && vm.notes.some(n => n.ch === 9));
+    recomputeDrumMode();
     gateTimes = (vm && vm.gates) || []; gatePtr = firstGateAtOrAfter(now); lastFrozen = -1;   // R.4: gates ship in the VM
     ratedGates = {};   // verdicts belong to the previous song
     // precompute static per-note layout ONCE (was recomputed every frame): musical-beat
@@ -148,7 +151,15 @@ const PiTV = (function () {
   function setView(v) { view = v; dirty = true; staticDirty = true; }
   // channels the player covers (Set) -> the rest is hidden; null = show all (Listen).
   // hand ('R'/'L') optionally narrows to one hand of a single-channel part (the other dims).
-  function setPlay(channels, hand) { playSet = channels ? new Set(channels) : null; playHand = (hand === 'R' || hand === 'L') ? hand : null; dirty = true; }
+  function setPlay(channels, hand) { playSet = channels ? new Set(channels) : null; playHand = (hand === 'R' || hand === 'L') ? hand : null; recomputeDrumMode(); dirty = true; }
+  // Drum staff when the visible notes are all percussion: a drum-only song, or the drum part (ch9)
+  // selected as the part to view/play in a full-band song.
+  function recomputeDrumMode() {
+    const before = drumMode;
+    const selDrum = !!(playSet && playSet.size && song && song._hasDrums && [...playSet].every(c => c === 9));
+    drumMode = !!(song && (song._allDrum || selDrum));
+    if (drumMode !== before) { staticDirty = true; dirty = true; }
+  }
   // Live keys the player presses -> drawn on the staff at the play line (PianoBooster behaviour).
   function setPlayed(n, on) { if (on) playedSet.add(n); else playedSet.delete(n); dirty = true; }
 
@@ -365,6 +376,9 @@ const PiTV = (function () {
     44: { pos: -5, g: 'x', v: 'dn' },                                       // hi-hat pedal (foot, below staff)
     51: { pos: 5, g: 'x', v: 'up' }, 59: { pos: 5, g: 'x', v: 'up' }, 53: { pos: 5, g: 'x', v: 'up' },  // ride
     49: { pos: 6, g: 'x', v: 'up' }, 57: { pos: 6, g: 'x', v: 'up' }, 55: { pos: 6, g: 'x', v: 'up' }, 52: { pos: 6, g: 'x', v: 'up' },  // crash/splash/china
+    39: { pos: 1, g: 'x', v: 'up' },                                       // hand clap (snare line, X)
+    54: { pos: 5, g: 'x', v: 'up' }, 56: { pos: 5, g: 'x', v: 'up' },      // tambourine / cowbell (above staff)
+    69: { pos: 6, g: 'x', v: 'up' }, 70: { pos: 6, g: 'x', v: 'up' }, 82: { pos: 6, g: 'x', v: 'up' },  // cabasa / maracas / shaker
   };
   const DRUM_FALLBACK = { pos: 1, g: 'o', v: 'up' };
 
