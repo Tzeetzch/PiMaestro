@@ -33,51 +33,94 @@ from engine.conductor import Conductor    # noqa: E402
 WEB_DIR = os.path.join(HERE, "web")
 VENDOR_DIR = os.path.join(HERE, "vendor")
 
-# Directories we are willing to read MIDI from (defends /song against arbitrary reads).
-SONG_ROOTS = [os.path.realpath(os.path.expanduser(p)) for p in (
-    "~/linthesia/music", "~/Music", os.path.join(HERE, "songs"),
-)]
-# Web uploads land here (under ~/Music, so they're listed by /songs as the "Uploads" group).
-UPLOAD_DIR = os.path.realpath(os.path.expanduser("~/Music/Uploads"))
+# ---- catalogue: which MIDI we serve, grouped by folder (defends /song against arbitrary reads) ----
+class SongCatalog:
+    def __init__(self):
+        self.roots = [os.path.realpath(os.path.expanduser(p)) for p in
+                      ("~/linthesia/music", "~/Music", os.path.join(HERE, "songs"))]
+        self.upload_dir = os.path.realpath(os.path.expanduser("~/Music/Uploads"))   # web uploads land here
+
+    @staticmethod
+    def _group_label(path):
+        """(order, display) from the folder name. A LEADING number orders groups and is hidden from
+        the label, so '21 Piano - Classical' shows as 'Piano - Classical' and sorts by 21."""
+        parent = os.path.basename(os.path.dirname(path)).replace("_", " ").strip()
+        m = re.match(r"(\d+)\s*[-.]*\s*(.+)", parent)
+        if m:
+            return int(m.group(1)), m.group(2).strip()
+        return 900, (parent or "Songs")
+
+    def list(self):
+        songs = []
+        for root in self.roots:
+            if not os.path.isdir(root):
+                continue
+            for dirpath, _dirs, files in os.walk(root):
+                for fn in files:
+                    if fn.lower().endswith((".mid", ".midi")):
+                        full = os.path.realpath(os.path.join(dirpath, fn))   # canonical = library key
+                        order, label = self._group_label(full)
+                        songs.append({"title": os.path.splitext(fn)[0].replace("_", " "),
+                                      "file": full, "group": label, "_o": order})
+        songs.sort(key=lambda s: (s["_o"], s["group"], s["title"]))          # ordered groups, then title
+        return songs
+
+    def is_allowed(self, path):
+        real = os.path.realpath(path)
+        return (real.lower().endswith((".mid", ".midi"))
+                and any(real == r or real.startswith(r + os.sep) for r in self.roots))
+
+
+# ---- per-song settings (part/speed/octave/mode + fav/played), keyed by file path, on the Pi ----
+class SettingsStore:
+    def __init__(self):
+        self.dir = os.path.expanduser("~/.config/pitv")
+        self.file = os.path.join(self.dir, "song-settings.json")
+        self._lock = threading.Lock()
+
+    def load_all(self):
+        try:
+            with open(self.file) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def save_for(self, path, settings):
+        with self._lock:
+            data = self.load_all()
+            if settings is None:
+                data.pop(path, None)
+            else:
+                data.setdefault(path, {}).update(settings)    # merge: keep fav/played + play-settings
+            try:
+                os.makedirs(self.dir, exist_ok=True)
+                tmp = self.file + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(data, f, indent=1)
+                os.replace(tmp, self.file)                     # atomic write
+            except OSError:
+                pass
+
+
+# ---- power: the phone remote requests poweroff/reboot; a seat-session watcher polls /halt and runs
+# the clean systemctl action (the server runs in the user manager, not a seat, so it can't itself). ----
+class PowerControl:
+    def __init__(self):
+        self._action = ""
+
+    def request(self, action):
+        self._action = action
+
+    def pending(self):
+        return self._action
+
+
+CATALOG = SongCatalog()
+SETTINGS = SettingsStore()
+POWER = PowerControl()
 
 clients = []
 clients_lock = threading.Lock()
-
-# Power action requested by the phone remote ("poweroff"/"reboot"). The server can't do it (it runs
-# in the user manager, not an active seat session), so a tiny watcher IN the graphical session polls
-# /halt and runs the clean `systemctl poweroff|reboot` — which polkit allows the active user, no sudo.
-_POWER_ACTION = ""
-
-# Per-song settings (part/speed/octave/mode) live on the Pi so they follow the song to any
-# client. Keyed by the song's file path.
-SETTINGS_DIR = os.path.expanduser("~/.config/pitv")
-SETTINGS_FILE = os.path.join(SETTINGS_DIR, "song-settings.json")
-_settings_lock = threading.Lock()
-
-
-def _load_settings():
-    try:
-        with open(SETTINGS_FILE) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
-
-
-def _save_settings_for(path, settings):
-    with _settings_lock:
-        data = _load_settings()
-        if settings is None:
-            data.pop(path, None)
-        else:
-            data.setdefault(path, {}).update(settings)    # merge: keep fav/played + play-settings
-        try:
-            os.makedirs(SETTINGS_DIR, exist_ok=True)
-            tmp = SETTINGS_FILE + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(data, f, indent=1)
-            os.replace(tmp, SETTINGS_FILE)        # atomic write
-        except OSError:
-            pass
 # aseqdump prints note-OFF with no velocity field ("Note off  0, note 69"), so velocity
 # is optional here — otherwise note-offs never match and keys/sound never release.
 NOTE_RE = re.compile(r"Note (on|off)\b.*?note (\d+)(?:.*?velocity (\d+))?", re.I)
@@ -138,44 +181,6 @@ def midi_reader(port):
         time.sleep(2)
 
 
-# ---------------------------------------------------------------- song catalogue
-def _group_label(path):
-    """(order, display) from the folder name. A LEADING number orders groups and is hidden from the
-    label, so folders like '21 Piano - Classical' show as 'Piano - Classical' and sort by 21.
-    Unnumbered folders sort last (900), with underscores prettified to spaces."""
-    parent = os.path.basename(os.path.dirname(path)).replace("_", " ").strip()
-    m = re.match(r"(\d+)\s*[-.]*\s*(.+)", parent)
-    if m:
-        return int(m.group(1)), m.group(2).strip()
-    return 900, (parent or "Songs")
-
-
-def list_songs():
-    songs = []
-    for root in SONG_ROOTS:
-        if not os.path.isdir(root):
-            continue
-        for dirpath, _dirs, files in os.walk(root):
-            for fn in files:
-                if fn.lower().endswith((".mid", ".midi")):
-                    full = os.path.realpath(os.path.join(dirpath, fn))   # canonical = library key
-                    order, label = _group_label(full)
-                    songs.append({
-                        "title": os.path.splitext(fn)[0].replace("_", " "),
-                        "file": full,
-                        "group": label,
-                        "_o": order,                                      # hidden: group sort order
-                    })
-    songs.sort(key=lambda s: (s["_o"], s["group"], s["title"]))           # ordered groups, then title
-    return songs
-
-
-def _is_allowed_song(path):
-    real = os.path.realpath(path)
-    return (real.lower().endswith((".mid", ".midi"))
-            and any(real == r or real.startswith(r + os.sep) for r in SONG_ROOTS))
-
-
 # ---------------------------------------------------------------- HTTP
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -188,18 +193,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if u.path == "/events":
             self._sse()
         elif u.path == "/songs":
-            self._json(list_songs())
+            self._json(CATALOG.list())
         elif u.path == "/song":
             self._song(parse_qs(u.query))
         elif u.path == "/settings":
             path = (parse_qs(u.query).get("file") or [""])[0]
-            self._json((_load_settings().get(os.path.realpath(path)) or {}) if _is_allowed_song(path) else {})
+            self._json((SETTINGS.load_all().get(os.path.realpath(path)) or {}) if CATALOG.is_allowed(path) else {})
         elif u.path == "/halt":
-            self._json(_POWER_ACTION)             # "" | "poweroff" | "reboot" — the session watcher polls this
+            self._json(POWER.pending())           # "" | "poweroff" | "reboot" — the session watcher polls this
         elif u.path == "/remote":
             self._static("/remote.html")          # phone power remote (clean shutdown/restart, no TV needed)
         elif u.path == "/library":
-            self._json(_load_settings())          # {path: {fav, played, ...}} for Favorites/Recent
+            self._json(SETTINGS.load_all())       # {path: {fav, played, ...}} for Favorites/Recent
         else:
             self._static(u.path)
 
@@ -231,7 +236,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # --- /control command handlers (registered in the _CONTROL dispatch table at the end) ---
     def _c_load(self, req):
         path = req.get("file", "")
-        if not _is_allowed_song(path):
+        if not CATALOG.is_allowed(path):
             self.send_error(403, "song not allowed"); return
         lo, hi = req.get("lo"), req.get("hi")
         try:
@@ -259,16 +264,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # persistence: settings / favourite / played all share one guarded write
     def _save_song(self, req, payload):
         f = req.get("file", "")
-        if _is_allowed_song(f):
-            _save_settings_for(os.path.realpath(f), payload)
+        if CATALOG.is_allowed(f):
+            SETTINGS.save_for(os.path.realpath(f), payload)
         self._json({"ok": True})
     def _c_save_settings(self, req): self._save_song(req, req.get("settings"))
     def _c_favorite(self, req): self._save_song(req, {"fav": bool(req.get("on"))})
     def _c_played(self, req): self._save_song(req, {"played": time.time()})
     # power: poweroff/reboot set a flag the seat-session watcher acts on; exit kills our own kiosk
     def _set_power(self, action):
-        global _POWER_ACTION
-        _POWER_ACTION = action
+        POWER.request(action)
         self._json({"ok": True})
     def _c_poweroff(self, req): self._set_power("poweroff")
     def _c_reboot(self, req): self._set_power("reboot")
@@ -303,8 +307,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if data[:4] != b"MThd":                                # must be a Standard MIDI File
             self.send_error(400, "not a Standard MIDI File"); return
         try:
-            os.makedirs(UPLOAD_DIR, exist_ok=True)
-            dest = os.path.join(UPLOAD_DIR, safe)
+            os.makedirs(CATALOG.upload_dir, exist_ok=True)
+            dest = os.path.join(CATALOG.upload_dir, safe)
             with open(dest, "wb") as f:
                 f.write(data)
         except OSError as e:                                    # noqa: BLE001
@@ -314,7 +318,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _song(self, qs):
         path = (qs.get("file") or [""])[0]
-        if not path or not _is_allowed_song(path):
+        if not path or not CATALOG.is_allowed(path):
             self.send_error(403, "song not allowed")
             return
         try:
@@ -412,7 +416,7 @@ def main():
     args = ap.parse_args()
     threading.Thread(target=midi_reader, args=(args.midi,), daemon=True).start()
     print(f"PiTV server: http://0.0.0.0:{args.port}  (MIDI: {args.midi})", flush=True)
-    print(f"song roots: {[r for r in SONG_ROOTS if os.path.isdir(r)]}", flush=True)
+    print(f"song roots: {[r for r in CATALOG.roots if os.path.isdir(r)]}", flush=True)
     # Optional HTTPS on a second port (same handler), so phones/tablets get a secure context —
     # required for an installable PWA + service worker. Cert from mkcert (locally trusted).
     if args.tls_cert and args.tls_key and os.path.exists(args.tls_cert) and os.path.exists(args.tls_key):
