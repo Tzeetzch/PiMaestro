@@ -627,45 +627,56 @@
   }
   function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
 
-  // Light engine — WebAudioTinySynth (oscillator GM, single 62KB file, very CPU-cheap).
-  const LightEngine = {
-    synth: null, loading: null,
+  // Pluggable browser synth: two engines share ONE contract behind a SoundEngine base class —
+  // the same base/subclass shape as the NotationView staff hierarchy in render.js.
+  class SoundEngine {
+    constructor() { this.loading = null; }
+    async ensure() {}                                    // load lib + open audio context + set programs
+    programs() {}                                        // (pre)load the instruments this song needs
+    now() { return audioCtx ? audioCtx.currentTime : 0; }
+    schedule(ch, n, v, at, dur) {}                       // queue a backing note at audio-time `at`
+    live(note, on, vel) {}                               // a key you pressed, right now
+    reset() {}                                           // drop everything queued/held
+  }
+
+  // Light — WebAudioTinySynth (oscillator GM, single 62KB file, very CPU-cheap).
+  class LightEngine extends SoundEngine {
+    constructor() { super(); this.synth = null; }
     async ensure() {
       if (!window.WebAudioTinySynth) { this.loading = this.loading || loadScript('vendor/webaudio-tinysynth.js'); await this.loading; }
       if (!this.synth) this.synth = new WebAudioTinySynth({ quality: 1, useReverb: 1, voices: 64 });
       audioCtx = this.synth.getAudioContext();
       if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
       this.programs();
-    },
+    }
     programs() {
       if (!this.synth || !currentVM) return;
       (currentVM.parts || []).forEach(p => { try { this.synth.setProgram(p.ch, p.program || 0); } catch (e) {} });
       try { this.synth.setProgram(0, 0); } catch (e) {}     // live keys = grand piano on ch0
-    },
-    now() { return this.synth.getAudioContext().currentTime; },
-    schedule(ch, n, v, at, dur) { this.synth.noteOn(ch, n, v, at); this.synth.noteOff(ch, n, at + dur); },
-    live(note, on, vel) { if (on) this.synth.noteOn(0, note, vel || 96, 0); else this.synth.noteOff(0, note, 0); },
-    reset() { try { this.synth.reset(); } catch (e) {} },
-  };
+    }
+    now() { return this.synth.getAudioContext().currentTime; }
+    schedule(ch, n, v, at, dur) { this.synth.noteOn(ch, n, v, at); this.synth.noteOff(ch, n, at + dur); }
+    live(note, on, vel) { if (on) this.synth.noteOn(0, note, vel || 96, 0); else this.synth.noteOff(0, note, 0); }
+    reset() { try { this.synth.reset(); } catch (e) {} }
+  }
 
-  // Rich engine — WebAudioFont: real sampled instruments, served from the Pi (web/waf/), loaded on
-  // demand. Self-contained: no internet needed at runtime. (Regenerate with pi/fetch-waf.sh.)
+  // Rich — WebAudioFont: real sampled instruments, served from the Pi (web/waf/), loaded on demand.
   const WAF_BASE = '/waf/';
-  const RichEngine = {
-    player: null, loading: null, ch: {}, drums: {}, env: {},
+  class RichEngine extends SoundEngine {
+    constructor() { super(); this.player = null; this.ch = {}; this.drums = {}; this.env = {}; }
     async ensure() {
       if (!window.WebAudioFontPlayer) { this.loading = this.loading || loadScript('vendor/WebAudioFontPlayer.js'); await this.loading; }
       if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       if (audioCtx.state === 'suspended') await audioCtx.resume();
       if (!this.player) this.player = new WebAudioFontPlayer();
       await this.programs();
-    },
-    _src(info) { return WAF_BASE + info.url.split('/').pop(); },   // host-swap to a fast CDN
+    }
+    _src(info) { return WAF_BASE + info.url.split('/').pop(); }
     _load(info) {
       const v = info.variable;
       if (window[v]) return Promise.resolve(window[v]);
       return new Promise(res => { this.player.loader.startLoad(audioCtx, this._src(info), v); this.player.loader.waitLoad(() => res(window[v] || null)); });
-    },
+    }
     async programs() {                                   // preload the instruments THIS song uses
       if (!this.player || !currentVM) return;
       this.ch = {};
@@ -676,8 +687,8 @@
         jobs.push(this._load(L.instrumentInfo(L.findInstrument(part.program || 0))).then(p => { this.ch[part.ch] = p; }));
       });
       await Promise.all(jobs).catch(() => {});
-    },
-    now() { return audioCtx.currentTime; },
+    }
+    now() { return audioCtx.currentTime; }
     schedule(ch, n, v, at, dur) {
       try {
         if (ch === 9) {                                  // percussion: one sample per drum note
@@ -690,18 +701,19 @@
           this.player.queueWaveTable(audioCtx, audioCtx.destination, preset, at, n, dur, v / 127);
         }
       } catch (e) {}
-    },
+    }
     live(note, on, vel) {
       try {
         const preset = this.ch[0]; if (!preset) return;
         if (on) { if (this.env[note]) this.env[note].cancel(); this.env[note] = this.player.queueWaveTable(audioCtx, audioCtx.destination, preset, audioCtx.currentTime, note, 9999, (vel || 96) / 127); }
         else if (this.env[note]) { try { this.env[note].cancel(); } catch (e) {} delete this.env[note]; }
       } catch (e) {}
-    },
-    reset() { try { this.player.cancelQueue(audioCtx); } catch (e) {} this.env = {}; },
-  };
+    }
+    reset() { try { this.player.cancelQueue(audioCtx); } catch (e) {} this.env = {}; }
+  }
 
-  function pickEngine() { return engineKind === 'light' ? LightEngine : RichEngine; }
+  const lightEngine = new LightEngine(), richEngine = new RichEngine();
+  function pickEngine() { return engineKind === 'light' ? lightEngine : richEngine; }
   async function ensureSound() { engine = pickEngine(); await engine.ensure(); }
   function schedTick() {                                // schedule backing a hair ahead of the clock
     if (!soundOn || !engine || !currentVM) return;
