@@ -26,7 +26,7 @@
         viewBtn = $('view'), songLabel = $('song'),
         handSel = $('handSel'), modeSel = $('modeSel'), instrPanel = $('instrPanel'),
         speedSel = $('speedSel'), kbdSel = $('kbdSel'), transSel = $('transSel'),
-        loopPanel = $('loopPanel'), scoreEl = $('score'), timeEl = $('time'),
+        scoreEl = $('score'), timeEl = $('time'),
         seekEl = $('seek'), seekFill = $('seekfill'), namesBtn = $('names'),
         stage = $('stage'), menu = $('menu'), startBtn = $('startBtn'),
         favBtn = $('fav'), uploadBtn = $('uploadBtn'), fileInput = $('fileInput'), splitSel = $('splitSel'),
@@ -53,7 +53,7 @@
     if (!onStage) {
       for (const k in SCREENS) $(SCREENS[k]).hidden = (k !== name);
       if (name === 'setup') {                       // refresh dynamic bits for this song
-        buildInstr(); buildLoop(); fillSetupHead(); updateModeHint();
+        buildInstr(); PiTransport.buildLoop(); fillSetupHead(); updateModeHint();
         const oneTrack = !!(currentVM && currentVM.rightChan != null && currentVM.rightChan === currentVM.leftChan);
         splitField.style.display = oneTrack ? '' : 'none';
       }
@@ -267,8 +267,8 @@
       if (keep) { setPlayChannels(currentPlay, currentHand); }
       else { buildPartOptions(vm); applyParts(); }
       showTranspose(vm.transpose || 0);
-      clearLoop();                               // bar counts differ between songs
-      if (view === 'setup') { buildInstr(); buildLoop(); }   // refresh Setup for the new song
+      PiTransport.clearLoop();                   // bar counts differ between songs
+      if (view === 'setup') { buildInstr(); PiTransport.buildLoop(); }   // refresh Setup for the new song
       const shift = vm.transpose || 0;
       const stag = shift ? ' · ' + (shift > 0 ? '+' : '') + (shift / 12) + ' oct' : '';
       songLabel.textContent = '♪ ' + vm.title + ' · ' + vm.notes.length + ' notes' + stag;
@@ -406,55 +406,10 @@
     hint2.textContent = 'play = you play it (shown). off = background (heard, hidden). mute = silent.';
     instrPanel.appendChild(hint2);
   }
-  /* ---- loop a bar range (practise a hard passage) ---- */
-  let loopOn = false, loopFromEl = null, loopToEl = null, loopToggleEl = null;
-  function barCount() { const b = currentVM && currentVM.bars; return (b && b.length) ? b.length - 1 : 0; }
-  function clampBar(n) { const m = barCount(); return Math.max(1, Math.min(m || 1, Math.round(n) || 1)); }
-  function barStart(n) { const b = currentVM.bars; return b[clampBar(n) - 1]; }
-  function barEnd(n) { const b = currentVM.bars, i = Math.min(clampBar(n), b.length - 1); return Math.min(b[i] != null ? b[i] : currentVM.duration, currentVM.duration); }
-  function applyLoop() {
-    if (!currentVM || !loopOn) { control({ cmd: 'loop', start: null, end: null }).catch(() => {}); PiTV.setLoop(null, null); return; }
-    let from = clampBar(+loopFromEl.value), to = clampBar(+loopToEl.value);
-    if (to < from) { to = from; loopToEl.value = to; }
-    loopFromEl.value = from;
-    const start = barStart(from), end = barEnd(to);
-    control({ cmd: 'loop', start, end }).catch(() => {});
-    PiTV.setLoop(start, end);
-  }
-  function clearLoop() { loopOn = false; if (loopToggleEl) loopToggleEl.classList.remove('on'); control({ cmd: 'loop', start: null, end: null }).catch(() => {}); PiTV.setLoop(null, null); }
-  function buildLoop() {
-    loopPanel.innerHTML = '';
-    const total = barCount();
-    const hint = document.createElement('div'); hint.className = 'hint';
-    hint.textContent = total ? ('Repeats these bars while you play (song has ' + total + ' bars).') : 'Load a song first.';
-    loopPanel.appendChild(hint);
-    if (!total) return;
-    const row = document.createElement('div'); row.className = 'row';
-    const mk = (val) => { const i = document.createElement('input'); i.type = 'number'; i.min = 1; i.max = total; i.value = val; i.onchange = () => { if (loopOn) applyLoop(); }; return i; };
-    loopFromEl = mk(1); loopToEl = mk(Math.min(total, 4));
-    row.appendChild(document.createTextNode('From'));
-    row.appendChild(loopFromEl);
-    row.appendChild(document.createTextNode('to'));
-    row.appendChild(loopToEl);
-    loopPanel.appendChild(row);
-    const brow = document.createElement('div'); brow.className = 'row';
-    loopToggleEl = document.createElement('button'); loopToggleEl.className = 'pbtn' + (loopOn ? ' on' : '');
-    loopToggleEl.textContent = loopOn ? 'Looping' : 'Loop on';
-    loopToggleEl.onclick = () => {
-      loopOn = !loopOn;
-      loopToggleEl.classList.toggle('on', loopOn);
-      loopToggleEl.textContent = loopOn ? 'Looping' : 'Loop on';
-      applyLoop();
-    };
-    brow.appendChild(loopToggleEl);
-    loopPanel.appendChild(brow);
-  }
-  seekEl.onclick = (e) => {                              // click the bar to jump to that spot
-    if (!currentVM) return;
-    const r = seekEl.getBoundingClientRect();
-    const frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-    control({ cmd: 'seek', t: frac * currentVM.duration }).catch(() => {});
-  };
+  /* ---- transport: click-to-seek + loop-a-passage drilling live in transport.js (PiTransport).
+     The app calls buildLoop on entering Setup and clearLoop on a new song; PiTransport owns the
+     loop state, the #loopPanel builder, and the #seek click handler. The pos heartbeat below still
+     paints the bar's fill/time readout. ---- */
   let canvasView = 'notation';
   viewBtn.textContent = 'View: Notation';
   viewBtn.onclick = () => {
@@ -567,6 +522,7 @@
     getView: () => view, getPlaying: () => playing, getVM: () => currentVM, getLastT: () => lastT,
     control, go, openPause,
   });
+  PiTransport.init({ getVM: () => currentVM, control });   // click-to-seek + loop drilling
 
   /* ---- SSE: live keyboard notes + streamed play-position. The transport (connect/reconnect/parse)
      lives in sse.js (PiSse); what follows is just the handlers — what each message DOES. ---- */

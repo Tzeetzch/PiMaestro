@@ -108,7 +108,7 @@ def main():
               "| scripts:", ev("document.scripts.length"), "| body len:", ev("document.body? document.body.innerHTML.length : -1"))
 
         problems = []
-        mods = ev("[typeof PiTV,typeof PiSound,typeof PiSse,typeof PiLib,typeof PiNav].join(',')")
+        mods = ev("[typeof PiTV,typeof PiSound,typeof PiSse,typeof PiLib,typeof PiNav,typeof PiTransport].join(',')")
         if "undefined" in (mods or "undefined"):
             problems.append(f"a module is missing: {mods}")
 
@@ -132,11 +132,21 @@ def main():
         title = ev("(document.getElementById('setupTitle')||{}).textContent")
         if not setup:
             problems.append("setup screen did not show after picking a song")
+        # transport: entering Setup runs PiTransport.buildLoop -> #loopPanel should be populated
+        loopui = ev("var lp=document.getElementById('loopPanel'); !!(lp && lp.querySelector('.hint'))")
+        loopbtn = ev("!!document.querySelector('#loopPanel button')")   # bar table present -> Loop button built
+        if not loopui:
+            problems.append("loop panel not built on Setup (PiTransport.buildLoop)")
+        # click-to-seek must not throw (PiTransport owns #seek's handler now)
+        seekok = ev("try{document.getElementById('seek').click(); 'ok'}catch(e){'THROW: '+e}")
+        if seekok != "ok":
+            problems.append("seek click threw: " + str(seekok))
+        print("transport -> loop hint:", loopui, "| loop button:", loopbtn, "| seek click:", seekok)
 
         errs = ev("JSON.stringify(window.__errs||[])")
         errlist = json.loads(errs or "[]")
 
-        print("modules (PiTV,PiSound,PiSse,PiLib,PiNav):", mods)
+        print("modules (PiTV,PiSound,PiSse,PiLib,PiNav,PiTransport):", mods)
         print("after ArrowDown -> kbd:", kbd, "| active:", active, "| nav-here:", navhere)
         print("after pick -> setup shown:", setup, "| title:", title)
         print("JS errors / rejections:", errlist if errlist else "none")
