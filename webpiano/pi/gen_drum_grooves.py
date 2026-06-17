@@ -64,17 +64,26 @@ def vlq(n):
 def build(groove):
     name, bpm, grid, bars, base, fill, fill_bars = groove
     step_ticks = (PPQ * 4) // grid
-    dur = 30
-    events = []  # (abs_tick, order, bytes)  order: 0=meta/off before 1=on at same tick
+    song_end = bars * grid * step_ticks
+    # Collect each instrument's onsets, then give every hit a NOTE VALUE = gap to its next hit
+    # (capped at a quarter). That's what makes the notation read right — 8th hats -> 8th notes,
+    # quarter kicks -> quarter notes — instead of everything looking like 16ths.
+    onsets = {}
     for b in range(bars):
         pat = fill if (fill and b in fill_bars) else base
         bar_tick = b * grid * step_ticks
         for note, steps in pat.items():
-            v = VEL.get(note, 100)
             for st in steps:
-                t = bar_tick + st * step_ticks
-                events.append((t, 1, bytes([0x99, note, v])))           # note on, ch10
-                events.append((t + dur, 0, bytes([0x89, note, 0])))     # note off
+                onsets.setdefault(note, []).append(bar_tick + st * step_ticks)
+    events = []  # (abs_tick, order, bytes)  order: 0=off before 1=on at same tick
+    for note, ts in onsets.items():
+        ts.sort()
+        v = VEL.get(note, 100)
+        for i, t in enumerate(ts):
+            nxt = ts[i + 1] if i + 1 < len(ts) else song_end
+            dur = max(60, min(PPQ, nxt - t))                            # 16th..quarter
+            events.append((t, 1, bytes([0x99, note, v])))               # note on, ch10
+            events.append((t + dur, 0, bytes([0x89, note, 0])))         # note off
     events.sort(key=lambda e: (e[0], e[1]))
 
     track = bytearray()

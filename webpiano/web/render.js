@@ -49,7 +49,7 @@ const PiTV = (function () {
   function flashWrong(n) { const el = keys[n]; if (!el) return; el.classList.add('wrong'); setTimeout(() => el.classList.remove('wrong'), 350); }
 
   /* ---- shared playback state (set from the streamed position) ---- */
-  let canvas, ctx, song = null, view = 'notation';
+  let canvas, ctx, song = null, view = 'notation', drumMode = false;
   let now = -LOOKAHEAD, waiting = false, wanted = [], dirty = true, playSet = null;
   let loopA = null, loopB = null;            // loop region (seconds), or null
   let playHand = null;                       // 'R'/'L' to emphasise one hand of a 1-channel part
@@ -83,6 +83,8 @@ const PiTV = (function () {
   }
   function setSong(vm) {
     song = vm; now = -LOOKAHEAD; setWanted([]); dirty = true; staticDirty = true;
+    // Drum chart? (all notes on GM channel 10 -> render the percussion staff instead of the grand staff)
+    drumMode = !!(vm && vm.notes && vm.notes.length && vm.notes.every(n => n.ch === 9));
     gateTimes = (vm && vm.gates) || []; gatePtr = firstGateAtOrAfter(now); lastFrozen = -1;   // R.4: gates ship in the VM
     ratedGates = {};   // verdicts belong to the previous song
     // precompute static per-note layout ONCE (was recomputed every frame): musical-beat
@@ -346,6 +348,26 @@ const PiTV = (function () {
     const staff = n >= (split || 60) ? 'treble' : 'bass';
     return { staff, idx: staff === 'treble' ? D - 41 : D - 29, acc: ACC[pc] };   // B4=41, D3=29 are the centres
   }
+  // ---- DRUM NOTATION placement (standard percussion staff) ----
+  // GM drum note -> {pos, g, v}. pos = stave-index units (lines even, spaces odd; top line +4,
+  // middle line 0, bottom line -4). g: 'x' cymbal/hi-hat, 'o' drum head. v: 'up' hands, 'dn' feet.
+  // Hal-Leonard-style placements: kick bottom space (stem down), snare 3rd space, toms descending,
+  // hats/ride/crash as X on/above the top line, hi-hat pedal X below the staff.
+  const DRUM_MAP = {
+    35: { pos: -3, g: 'o', v: 'dn' }, 36: { pos: -3, g: 'o', v: 'dn' },     // bass drum (kick)
+    41: { pos: -3, g: 'o', v: 'up' }, 43: { pos: -3, g: 'o', v: 'up' },     // floor tom (shares kick space, stem up)
+    45: { pos: -1, g: 'o', v: 'up' }, 47: { pos: -1, g: 'o', v: 'up' },     // low/mid tom (2nd space)
+    48: { pos: 3, g: 'o', v: 'up' }, 50: { pos: 3, g: 'o', v: 'up' },       // high tom (4th space)
+    38: { pos: 1, g: 'o', v: 'up' }, 40: { pos: 1, g: 'o', v: 'up' },       // snare (3rd space)
+    37: { pos: 1, g: 'x', v: 'up' },                                        // side stick
+    42: { pos: 4, g: 'x', v: 'up' },                                        // closed hi-hat (top line)
+    46: { pos: 4, g: 'x', v: 'up', open: true },                           // open hi-hat
+    44: { pos: -5, g: 'x', v: 'dn' },                                       // hi-hat pedal (foot, below staff)
+    51: { pos: 5, g: 'x', v: 'up' }, 59: { pos: 5, g: 'x', v: 'up' }, 53: { pos: 5, g: 'x', v: 'up' },  // ride
+    49: { pos: 6, g: 'x', v: 'up' }, 57: { pos: 6, g: 'x', v: 'up' }, 55: { pos: 6, g: 'x', v: 'up' }, 52: { pos: 6, g: 'x', v: 'up' },  // crash/splash/china
+  };
+  const DRUM_FALLBACK = { pos: 1, g: 'o', v: 'up' };
+
   // Map a real-time position (sec) to a fractional musical-beat index using the engine's
   // tempo-mapped beat grid. This makes horizontal spacing musical (constant width per note
   // value, tempo-independent) like PianoBooster, while the playhead still tracks real time.
@@ -415,31 +437,34 @@ const PiTV = (function () {
     staticDirty = false;
   }
 
-  function drawNotation(W, H) {
-    const g = notationGeom(W, H);
-    if (staticDirty || !staticCv || staticCv.width !== W || staticCv.height !== H) buildStaticLayer(W, H, g);
-    ctx.drawImage(staticCv, 0, 0);                    // blit the cached staff + header
-    if (!song) return;
-    const { step, s, trebleC, bassC, scrollX, endX, playX, markTop, markBot, yOf } = g;
-    {
+  /* =================== NOTATION VIEWS (shared base + piano / drum variants) ===================
+     The grand staff and the drum staff share all the scrolling machinery — engraving-spaced layout,
+     the beat/bar grid, loop shading, the now-line, note windowing. The base class owns that; each
+     variant supplies only what differs: its geometry, its static header (clefs/sig), how to draw a
+     single note, which notes are visible, and where live-played keys sit on the staff. */
+  class NotationView {
+    // Per-variant overrides: geom(W,H) buildStatic(W,H,g) drawNote(nt,x,g) visible(nt) playedYs(g)
+    render(W, H) {
+      const g = this.geom(W, H);
+      if (staticDirty || !staticCv || staticCv.width !== W || staticCv.height !== H) this.buildStatic(W, H, g);
+      ctx.drawImage(staticCv, 0, 0);                  // blit the cached staff + header
+      if (!song) return;
+      const { step, s, scrollX, endX, playX, markTop, markBot, staves, barNumY } = g;
       // ---- scrolling region (engraving-spaced; clipped so it can't bleed into the header) ----
       const beats = song.beats, num = (song.timesig && song.timesig[0]) || 4;
       const aT = song._anchT || [], aLx = song._anchLx || [];   // real time <-> layout-x anchors
       const BEATS_AHEAD = 8;
       const ppb = Math.max(24, (endX - playX) / BEATS_AHEAD);   // px per layout unit
-      const nowLx = interp(aT, aLx, now);            // playhead position in the variable layout
+      const nowLx = interp(aT, aLx, now);
       const bx = lx => playX + (lx - nowLx) * ppb;
       const behind = (playX - scrollX) / ppb + 1;
       const lxLo = nowLx - behind - 0.5, lxHi = nowLx + BEATS_AHEAD + 0.5;
 
       ctx.save();
       ctx.beginPath(); ctx.rect(scrollX - 1, 0, endX - scrollX + 2, H); ctx.clip();
+      ctx.fillStyle = C_ZONE; ctx.fillRect(playX - 9 * s, markTop, 18 * s, markBot - markTop);   // play-zone band
 
-      // play zone band
-      ctx.fillStyle = C_ZONE; ctx.fillRect(playX - 9 * s, markTop, 18 * s, markBot - markTop);
-
-      // loop region: shade the looped bars + mark its edges (loopA/loopB are times -> layout x)
-      if (loopA != null && loopB != null) {
+      if (loopA != null && loopB != null) {           // shade the looped bars + mark its edges
         const xa = bx(interp(aT, aLx, loopA)), xz = bx(interp(aT, aLx, loopB));
         ctx.fillStyle = C_LOOP; ctx.fillRect(xa, markTop, xz - xa, markBot - markTop);
         ctx.strokeStyle = C_LOOPEDGE; ctx.lineWidth = Math.max(1.4, 1.6 * s);
@@ -447,112 +472,178 @@ const PiTV = (function () {
       }
 
       // beat + bar lines: each beat's TIME mapped through the layout, so they track the notes.
-      // Bound the beat indices by the visible time window (inverse map of the lx window).
       const tLo = interp(aLx, aT, lxLo), tHi = interp(aLx, aT, lxHi);
       const jStart = Math.max(0, nbound(beats, tLo) - 1), jEnd = Math.min(beats.length - 1, nbound(beats, tHi));
-      // Collect line positions, then issue ONE stroke() per style — on the Pi-4 GPU each stroke()
-      // is a separate draw submission, so batching dozens of grid lines into ~3 paths is a big win.
       const beatX = [], barmkX = [], barX = [], barNums = [];
       for (let j = jStart; j <= jEnd; j++) {
         const x = bx(interp(aT, aLx, beats[j]));
-        if (x >= scrollX && x <= endX) (j % num === 0 ? barmkX : beatX).push(x);   // counting line on every beat
-        if (j % num === 0) {                          // bar line within the staves, slight lead
-          const xb = x - 0.3 * ppb;
-          if (xb < scrollX || xb > endX) continue;
-          barX.push(xb); barNums.push([xb, Math.round(j / num) + 1]);
-        }
+        if (x >= scrollX && x <= endX) (j % num === 0 ? barmkX : beatX).push(x);
+        if (j % num === 0) { const xb = x - 0.3 * ppb; if (xb < scrollX || xb > endX) continue; barX.push(xb); barNums.push([xb, Math.round(j / num) + 1]); }
       }
       ctx.lineWidth = Math.max(1, s);
       if (beatX.length) { ctx.strokeStyle = C_BEAT; ctx.beginPath(); for (const x of beatX) { ctx.moveTo(x, markTop); ctx.lineTo(x, markBot); } ctx.stroke(); }
       if (barmkX.length) { ctx.strokeStyle = C_BARMK; ctx.beginPath(); for (const x of barmkX) { ctx.moveTo(x, markTop); ctx.lineTo(x, markBot); } ctx.stroke(); }
-      if (barX.length) {
+      if (barX.length) {                              // bar line through each stave (1 for drums, 2 for the grand staff)
         ctx.strokeStyle = C_BAR; ctx.lineWidth = Math.max(1.4, 1.7 * s); ctx.beginPath();
-        for (const xb of barX) { ctx.moveTo(xb, yOf('treble', 4)); ctx.lineTo(xb, yOf('treble', -4)); ctx.moveTo(xb, yOf('bass', 4)); ctx.lineTo(xb, yOf('bass', -4)); }
+        for (const xb of barX) for (const st of staves) { ctx.moveTo(xb, st.top); ctx.lineTo(xb, st.bot); }
         ctx.stroke();
       }
       if (barNums.length) {
-        ctx.fillStyle = C_BARNUM; ctx.font = '600 ' + (step * 1.25).toFixed(0) + 'px system-ui';
+        ctx.fillStyle = C_BARNUM; ctx.font = '600 ' + (step * 1.2).toFixed(0) + 'px system-ui';
         ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-        for (const bn of barNums) ctx.fillText(String(bn[1]), bn[0] + 3 * s, trebleC - 6 * step);
+        for (const bn of barNums) ctx.fillText(String(bn[1]), bn[0] + 3 * s, barNumY);
       }
-      // now line
-      ctx.strokeStyle = waiting ? C_WANT : C_NOW; ctx.lineWidth = 2;
+      ctx.strokeStyle = waiting ? C_WANT : C_NOW; ctx.lineWidth = 2;   // now line
       ctx.beginPath(); ctx.moveTo(playX, markTop); ctx.lineTo(playX, markBot); ctx.stroke();
 
-      // window to the visible layout range via binary search (notes sorted by _lx)
+      // notes — windowed to the visible layout range via binary search (notes sorted by _lx)
       const notes = song.notes;
       let i = lbound(notes, keyLx, lxLo);
       for (; i < notes.length; i++) {
         const nt = notes[i];
         if (nt._lx > lxHi) break;
-        if (playSet && !playSet.has(nt.ch)) continue;   // hide parts you don't play (background)
+        if (!this.visible(nt)) continue;
         const x = bx(nt._lx); if (x < scrollX - step || x > endX) continue;
-        const y = yOf(nt.staff, nt.idx);
-        const mine = (nt.n >= rangeLo && nt.n <= rangeHi) && (!playHand || nt.hand === playHand);
-        const verdict = mine ? rateCol(ratedGates[nt.t]) : null;   // green/yellow/red once this chord is rated
-        const col = verdict ? verdict
-          : (Math.abs(nt.t - now) < 0.06 && wantedSet[nt.n]) ? C_WANT : (mine ? C_NOTE : C_DIM);
-        const t = nt.sym, dotted = t.charAt(t.length - 1) === '.', base = dotted ? t.slice(0, -1) : t;
-        const solid = base !== 'h' && base !== 'w', flags = base === '16' ? 2 : base === '8' ? 1 : 0;
-        const c = nt.staff === 'treble' ? trebleC : bassC, lw = 12 * s;
-        // ledger lines (PB threshold |idx| >= 6)
-        ctx.strokeStyle = C_STAVE; ctx.lineWidth = Math.max(1, s);
-        if (nt.idx >= 6) for (let k = 6; k <= nt.idx; k += 2) { const yy = c - k * step; ctx.beginPath(); ctx.moveTo(x - lw, yy); ctx.lineTo(x + lw, yy); ctx.stroke(); }
-        if (nt.idx <= -6) for (let k = -6; k >= nt.idx; k -= 2) { const yy = c - k * step; ctx.beginPath(); ctx.moveTo(x - lw, yy); ctx.lineTo(x + lw, yy); ctx.stroke(); }
-        if (nt.acc) accidental(Math.abs(nt.acc) === 2 ? 2 : nt.acc, x - 16 * s, y, s, col);
-        // stem (up, right side) + flags
-        const noteW = solid ? 6 : 7;
-        if (base !== 'w') {
-          ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.4, 2 * s);
-          ctx.beginPath(); ctx.moveTo(x + noteW * s, y); ctx.lineTo(x + noteW * s, y - 34 * s); ctx.stroke();
-          let o = 34;
-          for (let f = 0; f < flags; f++) { ctx.beginPath(); ctx.moveTo(x + noteW * s, y - o * s); ctx.lineTo(x + (noteW + 8) * s, y - (o - 16) * s); ctx.stroke(); o -= 8; }
-        }
-        // note head (ported 12-vertex polygon) — solid uses the cached Path2D (R.3)
-        if (solid) { ctx.fillStyle = col; fillGlyph(NOTEHEAD_PATH, x, y, s); }
-        else { ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.4, 2 * s); strip(NOTEHEAD, x, y, s, true, false); }
-        if (dotted) {                                   // augmentation dot, right of the head (in the space if on a line)
-          const dy = (nt.idx % 2 === 0) ? y - step / 2 : y;
-          ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x + 11 * s, dy, Math.max(1.3, 1.8 * s), 0, 6.2832); ctx.fill();
-        }
-        // note name in a chip, up-and-left of the note (clear of the up-right stem)
-        if (showNames && nt.n <= 90 && nt._top && step >= 7) {
-          const fh = step * 1.5;
-          ctx.font = '600 ' + fh.toFixed(0) + 'px system-ui';
-          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-          const lx = x - 9 * s, ly = y - 2 * step - 2;
-          if (nt._nmW == null || nt._nmFh !== fh) { nt._nmW = ctx.measureText(nt.nm).width; nt._nmFh = fh; }  // measure once, not per frame
-          const tw = nt._nmW, pad = 3 * s;
-          ctx.fillStyle = 'rgba(13,17,23,0.85)';
-          rr(lx - tw / 2 - pad, ly - fh / 2 - 1, tw + 2 * pad, fh + 2, 3 * s); ctx.fill();
-          ctx.fillStyle = C_NAME;
-          ctx.fillText(nt.nm, lx, ly);
-        }
+        this.drawNote(nt, x, g);
       }
-      // Live keys the player is pressing: short horizontal marks just LEFT of the play bar at each
-      // pressed pitch's height (PianoBooster behaviour) — so they show what you're holding WITHOUT
-      // covering the notes sitting on the line.
-      if (playedSet.size) {
-        const split = (song && song.split) || 60;
-        const x2 = playX - 5 * s, x1 = playX - 30 * s;     // ~1cm tick to the left of the bar
-        ctx.strokeStyle = C_PLAYED; ctx.lineWidth = Math.max(2.5, 3 * s); ctx.lineCap = 'round';
-        ctx.beginPath();
-        for (const n of playedSet) {
-          const sp = staffPos(+n, split);
-          const y = yOf(sp.staff, sp.idx);
-          ctx.moveTo(x1, y); ctx.lineTo(x2, y);
-        }
+      // live keys the player is pressing: short marks just LEFT of the play bar (PianoBooster behaviour)
+      const ys = this.playedYs(g);
+      if (ys && ys.length) {
+        const x2 = playX - 5 * s, x1 = playX - 30 * s;
+        ctx.strokeStyle = C_PLAYED; ctx.lineWidth = Math.max(2.5, 3 * s); ctx.lineCap = 'round'; ctx.beginPath();
+        for (const y of ys) { ctx.moveTo(x1, y); ctx.lineTo(x2, y); }
         ctx.stroke(); ctx.lineCap = 'butt';
       }
       ctx.restore();
     }
   }
 
+  // ---- piano variant: the grand staff (treble + bass), pitched + sustained notes ----
+  class PianoStaff extends NotationView {
+    geom(W, H) {
+      const g = notationGeom(W, H);
+      g.staves = [{ top: g.yOf('treble', 4), bot: g.yOf('treble', -4) }, { top: g.yOf('bass', 4), bot: g.yOf('bass', -4) }];
+      g.barNumY = g.trebleC - 6 * g.step;
+      return g;
+    }
+    buildStatic(W, H, g) { buildStaticLayer(W, H, g); }
+    visible(nt) { return !(playSet && !playSet.has(nt.ch)); }   // hide parts you don't play (background)
+    playedYs(g) {
+      if (!playedSet.size) return null;
+      const split = (song && song.split) || 60, ys = [];
+      for (const n of playedSet) { const sp = staffPos(+n, split); ys.push(g.yOf(sp.staff, sp.idx)); }
+      return ys;
+    }
+    drawNote(nt, x, g) {
+      const { step, s, trebleC, bassC, yOf } = g;
+      const y = yOf(nt.staff, nt.idx);
+      const mine = (nt.n >= rangeLo && nt.n <= rangeHi) && (!playHand || nt.hand === playHand);
+      const verdict = mine ? rateCol(ratedGates[nt.t]) : null;   // green/yellow/red once this chord is rated
+      const col = verdict ? verdict
+        : (Math.abs(nt.t - now) < 0.06 && wantedSet[nt.n]) ? C_WANT : (mine ? C_NOTE : C_DIM);
+      const t = nt.sym, dotted = t.charAt(t.length - 1) === '.', base = dotted ? t.slice(0, -1) : t;
+      const solid = base !== 'h' && base !== 'w', flags = base === '16' ? 2 : base === '8' ? 1 : 0;
+      const c = nt.staff === 'treble' ? trebleC : bassC, lw = 12 * s;
+      ctx.strokeStyle = C_STAVE; ctx.lineWidth = Math.max(1, s);   // ledger lines (PB threshold |idx| >= 6)
+      if (nt.idx >= 6) for (let k = 6; k <= nt.idx; k += 2) { const yy = c - k * step; ctx.beginPath(); ctx.moveTo(x - lw, yy); ctx.lineTo(x + lw, yy); ctx.stroke(); }
+      if (nt.idx <= -6) for (let k = -6; k >= nt.idx; k -= 2) { const yy = c - k * step; ctx.beginPath(); ctx.moveTo(x - lw, yy); ctx.lineTo(x + lw, yy); ctx.stroke(); }
+      if (nt.acc) accidental(Math.abs(nt.acc) === 2 ? 2 : nt.acc, x - 16 * s, y, s, col);
+      const noteW = solid ? 6 : 7;
+      if (base !== 'w') {                             // stem (up, right side) + flags
+        ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.4, 2 * s);
+        ctx.beginPath(); ctx.moveTo(x + noteW * s, y); ctx.lineTo(x + noteW * s, y - 34 * s); ctx.stroke();
+        let o = 34;
+        for (let f = 0; f < flags; f++) { ctx.beginPath(); ctx.moveTo(x + noteW * s, y - o * s); ctx.lineTo(x + (noteW + 8) * s, y - (o - 16) * s); ctx.stroke(); o -= 8; }
+      }
+      if (solid) { ctx.fillStyle = col; fillGlyph(NOTEHEAD_PATH, x, y, s); }
+      else { ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.4, 2 * s); strip(NOTEHEAD, x, y, s, true, false); }
+      if (dotted) { const dy = (nt.idx % 2 === 0) ? y - step / 2 : y; ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x + 11 * s, dy, Math.max(1.3, 1.8 * s), 0, 6.2832); ctx.fill(); }
+      if (showNames && nt.n <= 90 && nt._top && step >= 7) {       // note-name chip, up-and-left of the head
+        const fh = step * 1.5;
+        ctx.font = '600 ' + fh.toFixed(0) + 'px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        const lx = x - 9 * s, ly = y - 2 * step - 2;
+        if (nt._nmW == null || nt._nmFh !== fh) { nt._nmW = ctx.measureText(nt.nm).width; nt._nmFh = fh; }
+        const tw = nt._nmW, pad = 3 * s;
+        ctx.fillStyle = 'rgba(13,17,23,0.85)'; rr(lx - tw / 2 - pad, ly - fh / 2 - 1, tw + 2 * pad, fh + 2, 3 * s); ctx.fill();
+        ctx.fillStyle = C_NAME; ctx.fillText(nt.nm, lx, ly);
+      }
+    }
+  }
+
+  // ---- drum variant: one 5-line percussion staff; placement/glyph/stem from DRUM_MAP ----
+  class DrumStaff extends NotationView {
+    geom(W, H) {
+      const step = Math.max(8, Math.min(22, H / 22)), s = step / 7, center = H / 2, x0 = 12;
+      const clefX = x0 + 22 * s, tsX = x0 + 50 * s, scrollX = tsX + 30 * s, endX = W - 14;
+      const playX = scrollX + (endX - scrollX) * 0.4, yOf = pos => center - pos * step;
+      return { step, s, center, x0, clefX, tsX, scrollX, endX, playX, yOf,
+               markTop: yOf(8), markBot: yOf(-8),
+               staves: [{ top: yOf(4), bot: yOf(-4) }], barNumY: yOf(4) - 1.6 * step };
+    }
+    buildStatic(W, H, g) {
+      if (!staticCv) staticCv = document.createElement('canvas');
+      staticCv.width = W; staticCv.height = H;
+      const save = ctx; ctx = staticCv.getContext('2d');
+      ctx.clearRect(0, 0, W, H);
+      const { step, s, x0, clefX, tsX, endX, yOf } = g, top = yOf(4), bot = yOf(-4);
+      ctx.strokeStyle = C_STAVE; ctx.lineWidth = Math.max(1, s);
+      for (let i = -4; i <= 4; i += 2) { const y = yOf(i); ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(endX, y); ctx.stroke(); }
+      ctx.beginPath(); ctx.moveTo(x0, top); ctx.lineTo(x0, bot); ctx.stroke();
+      ctx.fillStyle = C_NOTE;                         // percussion clef: two thick vertical bars
+      const bw = 2.6 * s, gp = 3.4 * s, y3 = yOf(3), hgt = yOf(-3) - yOf(3);
+      ctx.fillRect(clefX - gp / 2 - bw, y3, bw, hgt);
+      ctx.fillRect(clefX + gp / 2, y3, bw, hgt);
+      if (song && song.timesig) {
+        ctx.fillStyle = C_NOTE; ctx.font = 'bold ' + (step * 2.2).toFixed(0) + 'px Georgia,serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(String(song.timesig[0]), tsX, yOf(2));
+        ctx.fillText(String(song.timesig[1]), tsX, yOf(-2));
+      }
+      ctx = save; staticDirty = false;
+    }
+    visible(nt) { return nt.ch === 9; }
+    playedYs(g) {
+      if (!playedSet.size) return null;
+      const ys = [];
+      for (const n of playedSet) { const dm = DRUM_MAP[+n]; if (dm) ys.push(g.yOf(dm.pos)); }
+      return ys;
+    }
+    glyph(dm, x, y, s, col) {
+      if (dm.g === 'x') {                             // cymbal / hi-hat: an X
+        const r = 5 * s;
+        ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.6, 2.2 * s); ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y + r); ctx.moveTo(x - r, y + r); ctx.lineTo(x + r, y - r); ctx.stroke(); ctx.lineCap = 'butt';
+        if (dm.open) { ctx.beginPath(); ctx.arc(x, y - 9 * s, 3.2 * s, 0, 6.2832); ctx.stroke(); }   // open hi-hat ring
+      } else { ctx.fillStyle = col; fillGlyph(NOTEHEAD_PATH, x, y, s); }   // drum: solid oval head
+    }
+    stem(v, x, y, s, flags, col) {
+      const nw = 6, len = 30, up = v !== 'dn';        // hands stem up, feet (kick/hi-hat pedal) stem down
+      const sx = up ? x + nw * s : x - nw * s, ey = up ? y - len * s : y + len * s;
+      ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.4, 2 * s);
+      ctx.beginPath(); ctx.moveTo(sx, y); ctx.lineTo(sx, ey); ctx.stroke();
+      for (let f = 0; f < flags; f++) {               // flags (8th = 1, 16th = 2); beaming is a later pass
+        const fy = ey + (up ? f * 8 * s : -f * 8 * s);
+        ctx.beginPath(); ctx.moveTo(sx, fy); ctx.lineTo(sx + 8 * s, fy + (up ? 14 * s : -14 * s)); ctx.stroke();
+      }
+    }
+    drawNote(nt, x, g) {
+      const { s, yOf } = g;
+      const dm = DRUM_MAP[nt.n] || DRUM_FALLBACK, y = yOf(dm.pos);
+      const col = (Math.abs(nt.t - now) < 0.06) ? C_WANT : C_NOTE;
+      const sym = nt.sym || 'q', b2 = sym.charAt(sym.length - 1) === '.' ? sym.slice(0, -1) : sym;
+      const flags = b2 === '16' ? 2 : b2 === '8' ? 1 : 0;
+      this.stem(dm.v, x, y, s, flags, col);
+      this.glyph(dm, x, y, s, col);
+    }
+  }
+
+  const pianoView = new PianoStaff(), drumView = new DrumStaff();
+
   /* ---- frame ---- */
   function draw() {
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
-    if (view === 'notation') drawNotation(W, H);
+    if (view === 'notation') (drumMode ? drumView : pianoView).render(W, H);
     else drawGame(W, H);
   }
   // Hold 60fps the way game engines do: draw EVERY frame (never skip — motion stays smooth), but
