@@ -483,7 +483,9 @@ const PiTV = (function () {
       const nowLx = interp(aT, aLx, now);
       const bx = lx => playX + (lx - nowLx) * ppb;
       const behind = (playX - scrollX) / ppb + 1;
-      const lxLo = nowLx - behind - 0.5, lxHi = nowLx + BEATS_AHEAD + 0.5;
+      // collect ~2 layout-units (≥ a beat) PAST each edge so a beam group is fully formed before it
+      // scrolls on-screen — otherwise the run/beam-height recomputes as members appear and the beam jumps.
+      const lxLo = nowLx - behind - 2, lxHi = nowLx + BEATS_AHEAD + 2;
 
       ctx.save();
       ctx.beginPath(); ctx.rect(scrollX - 1, 0, endX - scrollX + 2, H); ctx.clip();
@@ -524,15 +526,16 @@ const PiTV = (function () {
       // notes — windowed via binary search (vmLay.lx sorted). TWO passes: heads (per note, by the
       // variant's drawHead), then ONE stems+beams+flags pass over the visible set so consecutive
       // 8th/16th columns in a beat beam together (instead of each note carrying its own flag).
-      const notes = song.notes, lx = vmLay.lx;
+      const notes = song.notes, lx = vmLay.lx, margin = 2 * ppb;
       const vis = [];
       let i = lbound(lx, ident, lxLo);
       for (; i < notes.length; i++) {
         if (lx[i] > lxHi) break;
         const nt = notes[i];
         if (!this.visible(nt)) continue;
-        const x = bx(lx[i]); if (x < scrollX - step || x > endX) continue;
-        const spec = this.drawHead(nt, x, g, i);     // draws the head; returns {x,y,up,flags,w,col} or null (no stem)
+        const x = bx(lx[i]); if (x < scrollX - step - margin || x > endX + margin) continue;
+        const onScreen = (x >= scrollX - step && x <= endX);
+        const spec = this.drawHead(nt, x, g, i, onScreen);   // head drawn only if on-screen; spec returned either way (for beaming)
         if (spec) { spec.t = nt.t; vis.push(spec); }
       }
       if (vis.length) this.drawStems(vis, g);
@@ -553,6 +556,12 @@ const PiTV = (function () {
     // column keeps its flag; quarters/halves get a plain stem. Velocity >= 100 draws an accent (>).
     drawStems(vis, g) {
       const { s } = g, beats = song.beats || [], NW = 6 * s, STEM = 30 * s;
+      // Accumulate everything into a few Path2Ds, then stroke each ONCE — on a Pi 4 the cost is the
+      // draw-call COUNT, not the pixels, so batching (instead of a stroke per stem/beam) is the win.
+      const stems = new Map(), beamP = new Path2D(), beam2 = new Path2D(), accP = new Path2D();
+      const sp = col => { let p = stems.get(col); if (!p) { p = new Path2D(); stems.set(col, p); } return p; };
+      const seg = (p, x0, y0, x1, y1) => { p.moveTo(x0, y0); p.lineTo(x1, y1); };
+      const accent = (x, y) => { const w = 5 * s, h = 3.5 * s; accP.moveTo(x - w, y - h); accP.lineTo(x + w, y); accP.lineTo(x - w, y + h); };
       for (const up of [true, false]) {
         const sub = vis.filter(o => o.up === up);
         if (!sub.length) continue;
@@ -567,37 +576,27 @@ const PiTV = (function () {
         while (i < cols.length) {
           let j = i;
           if (cols[i].f > 0) while (j + 1 < cols.length && cols[j + 1].f > 0 && cols[j + 1].beat === cols[i].beat) j++;
-          if (cols[i].f > 0 && j > i) this._beam(cols, i, j, up, NW, STEM, s);   // a run of >= 2 -> beam
-          else this._stem1(cols[i], up, NW, STEM, s);                            // plain stem (+ flag if lone 8th/16th)
+          if (cols[i].f > 0 && j > i) {                 // BEAM a run of >= 2 columns
+            let beamY = up ? 1e9 : -1e9;                // flat beam at the extreme stem-end
+            for (let k = i; k <= j; k++) { const e = up ? cols[k].lo - STEM : cols[k].hi + STEM; beamY = up ? Math.min(beamY, e) : Math.max(beamY, e); }
+            for (let k = i; k <= j; k++) { const c = cols[k], sx = c.x + (up ? NW : -NW); seg(sp(c.col), sx, up ? c.hi : c.lo, sx, beamY); if (c.w >= 100) accent(c.x, up ? beamY - 7 * s : beamY + 7 * s); }
+            seg(beamP, cols[i].x + (up ? NW : -NW), beamY, cols[j].x + (up ? NW : -NW), beamY);
+            const off = (up ? 1 : -1) * 5 * s;
+            for (let k = i; k < j; k++) if (cols[k].f >= 2 && cols[k + 1].f >= 2) seg(beam2, cols[k].x + (up ? NW : -NW), beamY + off, cols[k + 1].x + (up ? NW : -NW), beamY + off);
+          } else {                                      // plain stem (+ flag if a lone 8th/16th)
+            const c = cols[i], sx = c.x + (up ? NW : -NW), end = up ? c.lo - STEM : c.hi + STEM;
+            seg(sp(c.col), sx, up ? c.hi : c.lo, sx, end);
+            for (let f = 0; f < c.f; f++) { const fy = end + (up ? 1 : -1) * f * 8 * s; seg(sp(c.col), sx, fy, sx + 8 * s, fy + (up ? 14 : -14) * s); }
+            if (c.w >= 100) accent(c.x, up ? c.lo - 14 * s : c.hi + 14 * s);
+          }
           i = j + 1;
         }
       }
-    }
-    _stem1(c, up, NW, STEM, s) {
-      const sx = c.x + (up ? NW : -NW), headY = up ? c.hi : c.lo, end = up ? c.lo - STEM : c.hi + STEM;
-      ctx.strokeStyle = c.col; ctx.lineWidth = Math.max(1.4, 2 * s);
-      ctx.beginPath(); ctx.moveTo(sx, headY); ctx.lineTo(sx, end); ctx.stroke();
-      for (let f = 0; f < c.f; f++) { const fy = end + (up ? 1 : -1) * f * 8 * s; ctx.beginPath(); ctx.moveTo(sx, fy); ctx.lineTo(sx + 8 * s, fy + (up ? 14 : -14) * s); ctx.stroke(); }
-      if (c.w >= 100) this._accent(c.x, up ? c.lo - 14 * s : c.hi + 14 * s, s);
-    }
-    _beam(cols, i, j, up, NW, STEM, s) {
-      let beamY = up ? 1e9 : -1e9;                       // flat beam at the extreme stem-end across the run
-      for (let k = i; k <= j; k++) { const e = up ? cols[k].lo - STEM : cols[k].hi + STEM; beamY = up ? Math.min(beamY, e) : Math.max(beamY, e); }
-      ctx.lineWidth = Math.max(1.4, 2 * s);
-      for (let k = i; k <= j; k++) { const c = cols[k], sx = c.x + (up ? NW : -NW); ctx.strokeStyle = c.col; ctx.beginPath(); ctx.moveTo(sx, up ? c.hi : c.lo); ctx.lineTo(sx, beamY); ctx.stroke(); if (c.w >= 100) this._accent(c.x, up ? beamY - 7 * s : beamY + 7 * s, s); }
-      const x0 = cols[i].x + (up ? NW : -NW), x1 = cols[j].x + (up ? NW : -NW);
-      ctx.strokeStyle = C_NOTE; ctx.lineWidth = Math.max(2.4, 3 * s);
-      ctx.beginPath(); ctx.moveTo(x0, beamY); ctx.lineTo(x1, beamY); ctx.stroke();   // primary beam
-      const off = (up ? 1 : -1) * 5 * s; ctx.lineWidth = Math.max(2, 2.6 * s);
-      for (let k = i; k < j; k++) if (cols[k].f >= 2 && cols[k + 1].f >= 2) {        // secondary (16th) beam
-        const a = cols[k].x + (up ? NW : -NW), b = cols[k + 1].x + (up ? NW : -NW);
-        ctx.beginPath(); ctx.moveTo(a, beamY + off); ctx.lineTo(b, beamY + off); ctx.stroke();
-      }
-    }
-    _accent(x, y, s) {                                   // a ">" accent mark
-      const w = 5 * s, h = 3.5 * s;
-      ctx.strokeStyle = C_NOTE; ctx.lineWidth = Math.max(1.4, 1.8 * s); ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(x - w, y - h); ctx.lineTo(x + w, y); ctx.lineTo(x - w, y + h); ctx.stroke(); ctx.lineCap = 'butt';
+      ctx.lineCap = 'butt'; ctx.lineWidth = Math.max(1.4, 2 * s);
+      for (const [col, p] of stems) { ctx.strokeStyle = col; ctx.stroke(p); }
+      ctx.strokeStyle = C_NOTE; ctx.lineWidth = Math.max(2.4, 3 * s); ctx.stroke(beamP);
+      ctx.lineWidth = Math.max(2, 2.6 * s); ctx.stroke(beam2);
+      ctx.lineCap = 'round'; ctx.lineWidth = Math.max(1.4, 1.8 * s); ctx.stroke(accP); ctx.lineCap = 'butt';
     }
   }
 
@@ -617,7 +616,7 @@ const PiTV = (function () {
       for (const n of playedSet) { const sp = staffPos(+n, split); ys.push(g.yOf(sp.staff, sp.idx)); }
       return ys;
     }
-    drawHead(nt, x, g, i) {                           // draws the notehead (+ ledgers/acc/dot/name); returns the stem spec
+    drawHead(nt, x, g, i, onScreen) {                 // draws the notehead (+ ledgers/acc/dot/name); returns the stem spec
       const { step, s, trebleC, bassC, yOf } = g;
       const y = yOf(nt.staff, nt.idx);
       const mine = (nt.n >= rangeLo && nt.n <= rangeHi) && (!playHand || nt.hand === playHand);
@@ -625,6 +624,8 @@ const PiTV = (function () {
       const col = verdict ? verdict
         : (Math.abs(nt.t - now) < 0.06 && wantedSet[nt.n]) ? C_WANT : (mine ? C_NOTE : C_DIM);
       const t = nt.sym, dotted = t.charAt(t.length - 1) === '.', base = dotted ? t.slice(0, -1) : t;
+      const spec = base === 'w' ? null : { x, y, up: true, flags: flagsOf(nt.sym), w: nt.v || 0, col };   // grand staff: stems up; whole notes have none
+      if (!onScreen) return spec;                     // margin note (kept only so its beam group is complete)
       const solid = base !== 'h' && base !== 'w';
       const c = nt.staff === 'treble' ? trebleC : bassC, lw = 12 * s;
       ctx.strokeStyle = C_STAVE; ctx.lineWidth = Math.max(1, s);   // ledger lines (PB threshold |idx| >= 6)
@@ -643,7 +644,7 @@ const PiTV = (function () {
         ctx.fillStyle = 'rgba(13,17,23,0.85)'; rr(lx - tw / 2 - pad, ly - fh / 2 - 1, tw + 2 * pad, fh + 2, 3 * s); ctx.fill();
         ctx.fillStyle = C_NAME; ctx.fillText(nt.nm, lx, ly);
       }
-      return base === 'w' ? null : { x, y, up: true, flags: flagsOf(nt.sym), w: nt.v || 0, col };   // grand staff: stems up; whole notes have none
+      return spec;
     }
   }
 
@@ -693,11 +694,11 @@ const PiTV = (function () {
         if (dm.open) { ctx.beginPath(); ctx.arc(x, y - 9 * s, 3.2 * s, 0, 6.2832); ctx.stroke(); }   // open hi-hat ring
       } else { ctx.fillStyle = col; fillGlyph(NOTEHEAD_PATH, x, y, s); }   // drum: solid oval head
     }
-    drawHead(nt, x, g, i) {                            // draws the X/oval head; returns the stem spec (base beams them)
+    drawHead(nt, x, g, i, onScreen) {                  // draws the X/oval head; returns the stem spec (base beams them)
       const { s, yOf } = g;
       const dm = DRUM_MAP[nt.n] || DRUM_FALLBACK, y = yOf(dm.pos);
       const col = (Math.abs(nt.t - now) < 0.06) ? C_WANT : C_NOTE;
-      this.glyph(dm, x, y, s, col);
+      if (onScreen) this.glyph(dm, x, y, s, col);
       return { x, y, up: dm.v !== 'dn', flags: flagsOf(nt.sym), w: nt.v || 0, col };   // hands stem up, feet down
     }
   }
