@@ -464,8 +464,11 @@ const PiTV = (function () {
      the beat/bar grid, loop shading, the now-line, note windowing. The base class owns that; each
      variant supplies only what differs: its geometry, its static header (clefs/sig), how to draw a
      single note, which notes are visible, and where live-played keys sit on the staff. */
+  // beam/flag count from a duration symbol: 8th = 1, 16th = 2, 32nd = 3, longer = 0 (dot doesn't add).
+  function flagsOf(sym) { const b = (sym && sym.charAt(sym.length - 1) === '.') ? sym.slice(0, -1) : (sym || 'q'); return b === '32' ? 3 : b === '16' ? 2 : b === '8' ? 1 : 0; }
+
   class NotationView {
-    // Per-variant overrides: geom(W,H) buildStatic(W,H,g) drawNote(nt,x,g) visible(nt) playedYs(g)
+    // Per-variant overrides: geom(W,H) buildStatic(W,H,g) drawHead(nt,x,g,i)->stemSpec visible(nt) playedYs(g)
     render(W, H) {
       const g = this.geom(W, H);
       if (staticDirty || !staticCv || staticCv.width !== W || staticCv.height !== H) this.buildStatic(W, H, g);
@@ -518,16 +521,21 @@ const PiTV = (function () {
       ctx.strokeStyle = waiting ? C_WANT : C_NOW; ctx.lineWidth = 2;   // now line
       ctx.beginPath(); ctx.moveTo(playX, markTop); ctx.lineTo(playX, markBot); ctx.stroke();
 
-      // notes — windowed to the visible layout range via binary search (vmLay.lx sorted ascending)
+      // notes — windowed via binary search (vmLay.lx sorted). TWO passes: heads (per note, by the
+      // variant's drawHead), then ONE stems+beams+flags pass over the visible set so consecutive
+      // 8th/16th columns in a beat beam together (instead of each note carrying its own flag).
       const notes = song.notes, lx = vmLay.lx;
+      const vis = [];
       let i = lbound(lx, ident, lxLo);
       for (; i < notes.length; i++) {
         if (lx[i] > lxHi) break;
         const nt = notes[i];
         if (!this.visible(nt)) continue;
         const x = bx(lx[i]); if (x < scrollX - step || x > endX) continue;
-        this.drawNote(nt, x, g, i);
+        const spec = this.drawHead(nt, x, g, i);     // draws the head; returns {x,y,up,flags,w,col} or null (no stem)
+        if (spec) { spec.t = nt.t; vis.push(spec); }
       }
+      if (vis.length) this.drawStems(vis, g);
       // live keys the player is pressing: short marks just LEFT of the play bar (PianoBooster behaviour)
       const ys = this.playedYs(g);
       if (ys && ys.length) {
@@ -537,6 +545,59 @@ const PiTV = (function () {
         ctx.stroke(); ctx.lineCap = 'butt';
       }
       ctx.restore();
+    }
+
+    // ---- stems + beams + flags + accents (shared by both staves) ----
+    // Group the visible notes by voice (stem up/down), collapse same-x notes into columns (one stem,
+    // stacked heads), then beam consecutive 8th/16th columns that fall in the SAME beat. A lone flagged
+    // column keeps its flag; quarters/halves get a plain stem. Velocity >= 100 draws an accent (>).
+    drawStems(vis, g) {
+      const { s } = g, beats = song.beats || [], NW = 6 * s, STEM = 30 * s;
+      for (const up of [true, false]) {
+        const sub = vis.filter(o => o.up === up);
+        if (!sub.length) continue;
+        const map = new Map(), cols = [];
+        for (const o of sub) {                          // collapse notes sharing an x into one stem-column
+          const k = Math.round(o.x), c = map.get(k);
+          if (!c) { const nc = { x: o.x, lo: o.y, hi: o.y, f: o.flags, w: o.w, col: o.col, beat: nbound(beats, o.t + 1e-4) }; map.set(k, nc); cols.push(nc); }
+          else { c.lo = Math.min(c.lo, o.y); c.hi = Math.max(c.hi, o.y); c.f = Math.max(c.f, o.flags); c.w = Math.max(c.w, o.w); if (o.col === C_WANT) c.col = C_WANT; }
+        }
+        cols.sort((a, b) => a.x - b.x);
+        let i = 0;
+        while (i < cols.length) {
+          let j = i;
+          if (cols[i].f > 0) while (j + 1 < cols.length && cols[j + 1].f > 0 && cols[j + 1].beat === cols[i].beat) j++;
+          if (cols[i].f > 0 && j > i) this._beam(cols, i, j, up, NW, STEM, s);   // a run of >= 2 -> beam
+          else this._stem1(cols[i], up, NW, STEM, s);                            // plain stem (+ flag if lone 8th/16th)
+          i = j + 1;
+        }
+      }
+    }
+    _stem1(c, up, NW, STEM, s) {
+      const sx = c.x + (up ? NW : -NW), headY = up ? c.hi : c.lo, end = up ? c.lo - STEM : c.hi + STEM;
+      ctx.strokeStyle = c.col; ctx.lineWidth = Math.max(1.4, 2 * s);
+      ctx.beginPath(); ctx.moveTo(sx, headY); ctx.lineTo(sx, end); ctx.stroke();
+      for (let f = 0; f < c.f; f++) { const fy = end + (up ? 1 : -1) * f * 8 * s; ctx.beginPath(); ctx.moveTo(sx, fy); ctx.lineTo(sx + 8 * s, fy + (up ? 14 : -14) * s); ctx.stroke(); }
+      if (c.w >= 100) this._accent(c.x, up ? c.lo - 14 * s : c.hi + 14 * s, s);
+    }
+    _beam(cols, i, j, up, NW, STEM, s) {
+      let beamY = up ? 1e9 : -1e9;                       // flat beam at the extreme stem-end across the run
+      for (let k = i; k <= j; k++) { const e = up ? cols[k].lo - STEM : cols[k].hi + STEM; beamY = up ? Math.min(beamY, e) : Math.max(beamY, e); }
+      ctx.lineWidth = Math.max(1.4, 2 * s);
+      for (let k = i; k <= j; k++) { const c = cols[k], sx = c.x + (up ? NW : -NW); ctx.strokeStyle = c.col; ctx.beginPath(); ctx.moveTo(sx, up ? c.hi : c.lo); ctx.lineTo(sx, beamY); ctx.stroke(); if (c.w >= 100) this._accent(c.x, up ? beamY - 7 * s : beamY + 7 * s, s); }
+      const x0 = cols[i].x + (up ? NW : -NW), x1 = cols[j].x + (up ? NW : -NW);
+      ctx.strokeStyle = C_NOTE; ctx.lineWidth = Math.max(2.4, 3 * s);
+      ctx.beginPath(); ctx.moveTo(x0, beamY); ctx.lineTo(x1, beamY); ctx.stroke();   // primary beam
+      const off = (up ? 1 : -1) * 5 * s; ctx.lineWidth = Math.max(2, 2.6 * s);
+      for (let k = i; k < j; k++) if (cols[k].f >= 2 && cols[k + 1].f >= 2) {        // secondary (16th) beam
+        const a = cols[k].x + (up ? NW : -NW), b = cols[k + 1].x + (up ? NW : -NW);
+        ctx.beginPath(); ctx.moveTo(a, beamY + off); ctx.lineTo(b, beamY + off); ctx.stroke();
+      }
+    }
+    _accent(x, y, s) {                                   // a ">" accent mark
+      const w = 5 * s, h = 3.5 * s;
+      ctx.strokeStyle = C_NOTE; ctx.lineWidth = Math.max(1.4, 1.8 * s); ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x - w, y - h); ctx.lineTo(x + w, y); ctx.lineTo(x - w, y + h); ctx.stroke(); ctx.lineCap = 'butt';
     }
   }
 
@@ -556,7 +617,7 @@ const PiTV = (function () {
       for (const n of playedSet) { const sp = staffPos(+n, split); ys.push(g.yOf(sp.staff, sp.idx)); }
       return ys;
     }
-    drawNote(nt, x, g, i) {
+    drawHead(nt, x, g, i) {                           // draws the notehead (+ ledgers/acc/dot/name); returns the stem spec
       const { step, s, trebleC, bassC, yOf } = g;
       const y = yOf(nt.staff, nt.idx);
       const mine = (nt.n >= rangeLo && nt.n <= rangeHi) && (!playHand || nt.hand === playHand);
@@ -564,19 +625,12 @@ const PiTV = (function () {
       const col = verdict ? verdict
         : (Math.abs(nt.t - now) < 0.06 && wantedSet[nt.n]) ? C_WANT : (mine ? C_NOTE : C_DIM);
       const t = nt.sym, dotted = t.charAt(t.length - 1) === '.', base = dotted ? t.slice(0, -1) : t;
-      const solid = base !== 'h' && base !== 'w', flags = base === '16' ? 2 : base === '8' ? 1 : 0;
+      const solid = base !== 'h' && base !== 'w';
       const c = nt.staff === 'treble' ? trebleC : bassC, lw = 12 * s;
       ctx.strokeStyle = C_STAVE; ctx.lineWidth = Math.max(1, s);   // ledger lines (PB threshold |idx| >= 6)
       if (nt.idx >= 6) for (let k = 6; k <= nt.idx; k += 2) { const yy = c - k * step; ctx.beginPath(); ctx.moveTo(x - lw, yy); ctx.lineTo(x + lw, yy); ctx.stroke(); }
       if (nt.idx <= -6) for (let k = -6; k >= nt.idx; k -= 2) { const yy = c - k * step; ctx.beginPath(); ctx.moveTo(x - lw, yy); ctx.lineTo(x + lw, yy); ctx.stroke(); }
       if (nt.acc) accidental(Math.abs(nt.acc) === 2 ? 2 : nt.acc, x - 16 * s, y, s, col);
-      const noteW = solid ? 6 : 7;
-      if (base !== 'w') {                             // stem (up, right side) + flags
-        ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.4, 2 * s);
-        ctx.beginPath(); ctx.moveTo(x + noteW * s, y); ctx.lineTo(x + noteW * s, y - 34 * s); ctx.stroke();
-        let o = 34;
-        for (let f = 0; f < flags; f++) { ctx.beginPath(); ctx.moveTo(x + noteW * s, y - o * s); ctx.lineTo(x + (noteW + 8) * s, y - (o - 16) * s); ctx.stroke(); o -= 8; }
-      }
       if (solid) { ctx.fillStyle = col; fillGlyph(NOTEHEAD_PATH, x, y, s); }
       else { ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.4, 2 * s); strip(NOTEHEAD, x, y, s, true, false); }
       if (dotted) { const dy = (nt.idx % 2 === 0) ? y - step / 2 : y; ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x + 11 * s, dy, Math.max(1.3, 1.8 * s), 0, 6.2832); ctx.fill(); }
@@ -589,6 +643,7 @@ const PiTV = (function () {
         ctx.fillStyle = 'rgba(13,17,23,0.85)'; rr(lx - tw / 2 - pad, ly - fh / 2 - 1, tw + 2 * pad, fh + 2, 3 * s); ctx.fill();
         ctx.fillStyle = C_NAME; ctx.fillText(nt.nm, lx, ly);
       }
+      return base === 'w' ? null : { x, y, up: true, flags: flagsOf(nt.sym), w: nt.v || 0, col };   // grand staff: stems up; whole notes have none
     }
   }
 
@@ -638,24 +693,12 @@ const PiTV = (function () {
         if (dm.open) { ctx.beginPath(); ctx.arc(x, y - 9 * s, 3.2 * s, 0, 6.2832); ctx.stroke(); }   // open hi-hat ring
       } else { ctx.fillStyle = col; fillGlyph(NOTEHEAD_PATH, x, y, s); }   // drum: solid oval head
     }
-    stem(v, x, y, s, flags, col) {
-      const nw = 6, len = 30, up = v !== 'dn';        // hands stem up, feet (kick/hi-hat pedal) stem down
-      const sx = up ? x + nw * s : x - nw * s, ey = up ? y - len * s : y + len * s;
-      ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.4, 2 * s);
-      ctx.beginPath(); ctx.moveTo(sx, y); ctx.lineTo(sx, ey); ctx.stroke();
-      for (let f = 0; f < flags; f++) {               // flags (8th = 1, 16th = 2); beaming is a later pass
-        const fy = ey + (up ? f * 8 * s : -f * 8 * s);
-        ctx.beginPath(); ctx.moveTo(sx, fy); ctx.lineTo(sx + 8 * s, fy + (up ? 14 * s : -14 * s)); ctx.stroke();
-      }
-    }
-    drawNote(nt, x, g, i) {                            // i (note index) unused here; kept for the base-class call contract
+    drawHead(nt, x, g, i) {                            // draws the X/oval head; returns the stem spec (base beams them)
       const { s, yOf } = g;
       const dm = DRUM_MAP[nt.n] || DRUM_FALLBACK, y = yOf(dm.pos);
       const col = (Math.abs(nt.t - now) < 0.06) ? C_WANT : C_NOTE;
-      const sym = nt.sym || 'q', b2 = sym.charAt(sym.length - 1) === '.' ? sym.slice(0, -1) : sym;
-      const flags = b2 === '16' ? 2 : b2 === '8' ? 1 : 0;
-      this.stem(dm.v, x, y, s, flags, col);
       this.glyph(dm, x, y, s, col);
+      return { x, y, up: dm.v !== 'dn', flags: flagsOf(nt.sym), w: nt.v || 0, col };   // hands stem up, feet down
     }
   }
 
