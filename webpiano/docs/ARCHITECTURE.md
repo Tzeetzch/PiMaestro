@@ -37,8 +37,8 @@ MIDI keyboard ──ALSA──▶ FluidSynth (TCP :9800, -a pipewire) ──▶ 
   play/pause/reset, the pause + end-of-song reward screens, the screen router, and the SSE handlers.
   The browser logic was carved into single-concern boxes (below); `app.js` is the only one that knows
   the others by name and wires them together.
-- **web/{sound,sse,catalog,pilib,nav,transport,setup}.js** — the carved boxes (PiSound / PiSse /
-  PiCatalog / PiLib / PiNav / PiTransport / PiSetup). See **Box contracts** below.
+- **web/{session,sound,sse,catalog,pilib,nav,transport,setup}.js** — the carved boxes (PiSession /
+  PiSound / PiSse / PiCatalog / PiLib / PiNav / PiTransport / PiSetup). See **Box contracts** below.
 
 ## Box contracts
 
@@ -54,6 +54,7 @@ mechanically: grepping each module for `Pi<Sibling>.` returns nothing except in 
 
 | Box (file) | IN (injected / driven) | OUT | Must never know |
 |---|---|---|---|
+| **PiSession** (session.js) | property writes (`vm`/`file`/`play`/`hand`) | property reads | *everything* — it's a passive model |
 | **PiTV** (render.js) | `setSong`, `setPlay`, gate/clock/view/loop setters, `highlight`/`flashWrong` | `clockState()` (pulled) | songs, engine, sound, nav |
 | **PiSound** (sound.js) | `getVM`, `isMine`, `control`, `getClock` | audio out; `pi_mute` cmd | PiTV, library, nav |
 | **PiSse** (sse.js) | `start(handlers)`, `reconnect()` | `handlers[type](msg)` dispatch | what the messages *mean* |
@@ -78,8 +79,10 @@ DOM ownership: each shared node has exactly one owner — the box that *renders*
 through `showProgress`); `#modeSel` is the app's (PiSetup gets the mode as a `updateModeHint(mode)` arg,
 never reads the node).
 
-Known seam (not yet boxed): the performance settings (`currentVM/Play/mode/transpose/split`) are loose
-vars in `app.js` exposed through getters rather than a first-class `PiSession` box.
+The loaded-song state the other boxes read (the song `vm`, its `file`, the player's `play` channels +
+`hand`) is the **PiSession** model — a passive state container the app writes and the injected getters
+read. (`mode`/`transpose`/`split` stay in `app.js`: each is bound 1:1 to its `<select>` widget and the
+engine's string protocol, read only inside app's own logic, and shared with no other box.)
 
 ## Load-time precompute vs play-time stream (the performance contract)
 

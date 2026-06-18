@@ -53,7 +53,7 @@
       for (const k in SCREENS) $(SCREENS[k]).hidden = (k !== name);
       if (name === 'setup') {                       // refresh dynamic bits for this song
         PiSetup.buildInstr(); PiTransport.buildLoop(); PiSetup.fillSetupHead(); PiSetup.updateModeHint(mode);
-        const oneTrack = !!(currentVM && currentVM.rightChan != null && currentVM.rightChan === currentVM.leftChan);
+        const oneTrack = !!(PiSession.vm && PiSession.vm.rightChan != null && PiSession.vm.rightChan === PiSession.vm.leftChan);
         splitField.style.display = oneTrack ? '' : 'none';
       }
       menuTitle.textContent = TITLES[name] || '';
@@ -78,7 +78,9 @@
   PiTV.attachCanvas($('fall'));
   PiTV.enableClock();                              // render runs its own clock; pos frames only correct it
 
-  let loadedFile = null, mode = 'follow', playing = false, currentVM = null, currentPlay = [], currentHand = null;
+  // The loaded song + the player's part live in PiSession (session.js); mode/transpose/split + the
+  // transient flow flags (playing/restoring/loadSeq/lastT/selFile/endedShown) stay here in the orchestrator.
+  let mode = 'follow', playing = false;
   let transpose = 'auto';                       // octave shift to fit the keyboard ('auto' or semitones)
   let split = 60;                               // left/right hand + treble/bass split pitch (middle C)
   let restoring = false;                        // suppress auto-save while applying saved settings
@@ -90,12 +92,12 @@
   // Debounced so dragging a select through intermediate values doesn't rewrite the whole file each step.
   let saveTimer = null;
   function saveCurrent() {
-    if (restoring || !loadedFile) return;
-    const file = loadedFile;
+    if (restoring || !PiSession.file) return;
+    const file = PiSession.file;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       control({ cmd: 'save_settings', file: file, settings: {
-        hand: PiSetup.handValue(), play: currentPlay, speed: speedSel.value,
+        hand: PiSetup.handValue(), play: PiSession.play, speed: speedSel.value,
         transpose: transSel.value, mode: modeSel.value, split: splitSel.value,
       } }).catch(() => {});
     }, 350);
@@ -118,17 +120,17 @@
     localStorage.setItem('pitv.kbd', kbdSel.value);
     applyKbd(kbdSel.value);                       // dim out-of-range keys
     const [lo, hi] = kbdRange();
-    if (loadedFile) await loadSong(loadedFile, true);   // re-fit + re-gate for the new range
+    if (PiSession.file) await loadSong(PiSession.file, true);   // re-fit + re-gate for the new range
     else control({ cmd: 'range', lo, hi }).catch(() => {});
   };
   transSel.onchange = async () => {
     transpose = transSel.value === 'auto' ? 'auto' : +transSel.value;
-    if (loadedFile) await loadSong(loadedFile, true);
+    if (PiSession.file) await loadSong(PiSession.file, true);
     saveCurrent();
   };
   splitSel.onchange = async () => {
     split = +splitSel.value;
-    if (loadedFile) await loadSong(loadedFile, true);   // rebuilds hands/staff at the new split
+    if (PiSession.file) await loadSong(PiSession.file, true);   // rebuilds hands/staff at the new split
     saveCurrent();
   };
   speedSel.onchange = () => {
@@ -141,9 +143,9 @@
   // Set which part the player covers (channels + optional hand); the rest becomes background.
   // (The Part dropdown -> channels/hand logic + the Setup screen live in setup.js / PiSetup.)
   function setPlayChannels(ch, hand) {
-    currentPlay = ch.slice(); currentHand = hand || null;
-    PiTV.setPlay(ch, currentHand);            // show only your chosen part (Listen plays the rest for sound)
-    control({ cmd: 'play_parts', channels: ch, hand: currentHand }).catch(() => {});
+    PiSession.play = ch.slice(); PiSession.hand = hand || null;
+    PiTV.setPlay(ch, PiSession.hand);            // show only your chosen part (Listen plays the rest for sound)
+    control({ cmd: 'play_parts', channels: ch, hand: PiSession.hand }).catch(() => {});
   }
   function applyParts() {
     setPlayChannels(PiSetup.partChannels(), PiSetup.partHand());
@@ -169,14 +171,14 @@
   // Adopt the engine's authoritative snapshot (sent in the SSE 'hello' on connect / song change),
   // so a reconnecting or second client matches what the Pi is actually playing — not a default.
   function adoptHello(m) {
-    currentVM = m.vm; loadedFile = m.file || null; selFile = m.file || null; PiLib.select(selFile);
+    PiSession.vm = m.vm; PiSession.file = m.file || null; selFile = m.file || null; PiLib.select(selFile);
     PiTV.setSong(m.vm); PiSetup.buildPartOptions(m.vm); showTranspose(m.vm.transpose || 0);
     songLabel.textContent = '♪ ' + m.vm.title + ' · ' + m.vm.notes.length + ' notes';
     if (m.speed != null) { speedSel.value = String(m.speed); PiTV.setClock(m.playing, m.speed); }
     if (m.mode) { modeSel.value = m.mode; mode = m.mode; }
     PiTV.setFreezeMode(mode === 'follow');
     if (m.hand === 'R' || m.hand === 'L') PiSetup.setHand(m.hand);
-    if (Array.isArray(m.play)) { currentPlay = m.play.slice(); currentHand = m.hand || null; PiTV.setPlay(currentPlay, currentHand); }
+    if (Array.isArray(m.play)) { PiSession.play = m.play.slice(); PiSession.hand = m.hand || null; PiTV.setPlay(PiSession.play, PiSession.hand); }
     if (typeof m.pi_muted === 'boolean') PiSound.setPiMute(m.pi_muted);   // reflect the engine's real mute state
     PiSetup.updateModeHint(mode);
   }
@@ -198,13 +200,13 @@
     try {
       const [lo, hi] = kbdRange();
       const body = { cmd: 'load', file: file, transpose: transpose, lo: lo, hi: hi, split: split };
-      if (keep) body.play = currentPlay;
+      if (keep) body.play = PiSession.play;
       const vm = await control(body);
       if (token !== loadSeq) return false;        // a newer load started while we awaited — drop this one
-      loadedFile = file;
-      currentVM = vm;
+      PiSession.file = file;
+      PiSession.vm = vm;
       PiTV.setSong(vm);
-      if (keep) { setPlayChannels(currentPlay, currentHand); }
+      if (keep) { setPlayChannels(PiSession.play, PiSession.hand); }
       else { PiSetup.buildPartOptions(vm); applyParts(); }
       showTranspose(vm.transpose || 0);
       PiTransport.clearLoop();                   // bar counts differ between songs
@@ -216,7 +218,7 @@
       return true;
     } catch (e) {
       songLabel.textContent = 'could not load song';
-      loadedFile = null;
+      PiSession.file = null;
       return false;
     }
   }
@@ -245,7 +247,7 @@
     if (!ok) return;
     if (has && s.hand) PiSetup.setHand(s.hand);         // best-effort dropdown label
     if (has && s.play) setPlayChannels(s.play, PiSetup.partHand());   // authoritative part selection
-    PiTV.setPlay(currentPlay, currentHand);
+    PiTV.setPlay(PiSession.play, PiSession.hand);
     control({ cmd: 'speed', mult: +speedSel.value }).catch(() => {});   // sync engine
     control({ cmd: 'mode', mode: mode }).catch(() => {});
     PiLib.select(file);                                 // re-highlight the picked song in the rail
@@ -262,12 +264,12 @@
 
   /* ---- controls ---- */
   playBtn.onclick = async () => {
-    if (!loadedFile && selFile) await selectSong(selFile);
-    if (!loadedFile) return;
+    if (!PiSession.file && selFile) await selectSong(selFile);
+    if (!PiSession.file) return;
     const wantPlay = !playing;            // decide BEFORE the await — `playing` may change during it
     setPlayBtn(wantPlay);
     PiTV.setClock(wantPlay, +speedSel.value);   // optimistic: pause/play feels instant locally
-    if (wantPlay) { PiCatalog.markPlayed(loadedFile); endedShown = false; finish.hidden = true; closePause(); go('stage'); }  // fresh run
+    if (wantPlay) { PiCatalog.markPlayed(PiSession.file); endedShown = false; finish.hidden = true; closePause(); go('stage'); }  // fresh run
     try {
       await control({ cmd: wantPlay ? 'play' : 'stop' });
       if (!wantPlay) openPause();          // manual stop -> the pause screen (quick tweaks / quit)
@@ -284,13 +286,13 @@
     mode = modeSel.value;
     PiTV.setFreezeMode(mode === 'follow');   // only Follow freezes the local clock at gates
     PiSetup.updateModeHint(mode);
-    PiTV.setPlay(currentPlay, currentHand);
+    PiTV.setPlay(PiSession.play, PiSession.hand);
     saveCurrent();
     try { await control({ cmd: 'mode', mode: mode }); } catch (e) {}
   };
 
   /* ---- the per-track instruments panel + the Part dropdown + the mode hint + the hero live in
-     setup.js (PiSetup). app keeps the shared performance state (currentPlay/hand/mode/...) and the
+     setup.js (PiSetup). app keeps the shared performance state (PiSession + mode) and the
      load/select state machine; PiSetup renders the Setup screen and calls back via onPlay. ---- */
 
   /* ---- transport: click-to-seek + loop-a-passage drilling live in transport.js (PiTransport).
@@ -313,11 +315,11 @@
      scheduler, and the sound/mute UI). It reads the song + "which notes are mine" through the context
      below; we drive it via PiSound.resync / live / onPlay / heartbeat / setPiMute. ---- */
   function isMine(nt) {                                 // notes YOU play live -> not scheduled as backing
-    if (mode === 'listen' || !currentPlay.includes(nt.ch)) return false;
-    if (currentHand && nt.hand !== currentHand) return false;
+    if (mode === 'listen' || !PiSession.play.includes(nt.ch)) return false;
+    if (PiSession.hand && nt.hand !== PiSession.hand) return false;
     const [lo, hi] = kbdRange(); return nt.n >= lo && nt.n <= hi;
   }
-  PiSound.init({ getVM: () => currentVM, isMine, control, getClock: () => PiTV.clockState() });
+  PiSound.init({ getVM: () => PiSession.vm, isMine, control, getClock: () => PiTV.clockState() });
 
   // Timing feedback: running tallies + an instant per-note flash (early / good / late).
   let timingTally = null, flashing = false, flashTimer = null;
@@ -370,7 +372,7 @@
     finStars.textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
     finSub.textContent = good + ' good · ' + late + ' late · ' + early + ' early'
       + (miss ? ' · ' + miss + ' missed' : '') + (wrong ? ' · ' + wrong + ' wrong' : '');
-    if (loadedFile) PiCatalog.setBest(loadedFile, stars);   // best (persisted) follows the song; only writes if higher
+    if (PiSession.file) PiCatalog.setBest(PiSession.file, stars);   // best (persisted) follows the song; only writes if higher
     finish.hidden = false;
     if (PiNav.isKbd()) setTimeout(() => PiNav.focusAt(finAgain), 0);
   }
@@ -379,7 +381,7 @@
 
   /* ---- pause screen (manual stop): quick no-reload tweaks + resume / restart / quit ---- */
   function openPause() {
-    if (!loadedFile) return;
+    if (!PiSession.file) return;
     pMode.innerHTML = modeSel.innerHTML; pMode.value = modeSel.value;       // mirror the live (no-reload) controls
     pSpeed.innerHTML = speedSel.innerHTML; pSpeed.value = speedSel.value;
     const hm = PiSetup.handMirror(); pHand.innerHTML = hm.html; pHand.value = hm.value;
@@ -397,7 +399,7 @@
     closePause(); setPlayBtn(false);
     PiTV.setClock(false);
     try { await control({ cmd: 'stop' }); } catch (e) {}
-    loadedFile = null;                                           // next Play reloads the song fresh
+    PiSession.file = null;                                           // next Play reloads the song fresh
     go('library');
   };
 
@@ -406,12 +408,12 @@
      song (for seek) and the actions it triggers (go / openPause / control). ---- */
   PiNav.init({
     screens: SCREENS, parent: PARENT,
-    getView: () => view, getPlaying: () => playing, getVM: () => currentVM, getLastT: () => lastT,
+    getView: () => view, getPlaying: () => playing, getVM: () => PiSession.vm, getLastT: () => lastT,
     control, go, openPause,
   });
-  PiTransport.init({ getVM: () => currentVM, control, showLoop: (a, b) => PiTV.setLoop(a, b) });   // click-to-seek + loop drilling
+  PiTransport.init({ getVM: () => PiSession.vm, control, showLoop: (a, b) => PiTV.setLoop(a, b) });   // click-to-seek + loop drilling
   PiSetup.init({                                           // the Setup screen: part dropdown + instruments + hero
-    getVM: () => currentVM, getPlay: () => currentPlay, getSelFile: () => selFile, control,
+    getVM: () => PiSession.vm, getPlay: () => PiSession.play, getSelFile: () => selFile, control,
     onPlay: (channels) => { setPlayChannels(channels, null); saveCurrent(); },   // player re-picked their tracks
     onPart: () => applyParts(),                            // player changed the Part dropdown
     coverGlyph: PiCatalog.coverGlyph, coverBg: PiCatalog.coverBg, isFav: PiCatalog.isFav,    // injected — PiSetup never names the catalogue
@@ -426,12 +428,12 @@
     // device joining mid-song). An idle Pi may still hold a song loaded from before — ignore it,
     // so a fresh load / F5 starts clean on the Library instead of dumping you into a random song.
     if (m.type === 'hello') {
-      if (m.vm && m.playing && (!currentVM || m.file !== loadedFile)) {
+      if (m.vm && m.playing && (!PiSession.vm || m.file !== PiSession.file)) {
         adoptHello(m); setPlayBtn(true); go('stage');   // join the in-progress song
-      } else if (m.vm && !currentVM) {
+      } else if (m.vm && !PiSession.vm) {
         adoptHello(m); setPlayBtn(!!m.playing);          // loaded-but-paused: adopt model, stay on Home
       }
-    } else if (m.file && loadedFile && m.file !== loadedFile) {
+    } else if (m.file && PiSession.file && m.file !== PiSession.file) {
       PiSse.reconnect(); return;                           // stale view: reconnect for a clean hello snapshot
     }
     lastT = m.t;                                           // local clock: pos is just a correction heartbeat
@@ -440,7 +442,7 @@
     PiSound.heartbeat(m.t);                                // re-aims the backing scheduler on a backward jump
     if (playing && m.t < 0) { const n = Math.min(3, Math.ceil(-m.t)); countin.firstChild.textContent = n > 0 ? n : ''; countin.hidden = n <= 0; }
     else if (!countin.hidden) countin.hidden = true;
-    PiTransport.showProgress(m.t, currentVM ? currentVM.duration : 0);   // PiTransport owns the position bar
+    PiTransport.showProgress(m.t, PiSession.vm ? PiSession.vm.duration : 0);   // PiTransport owns the position bar
     timingTally = m.timing;
     const tk = m.timing ? [m.timing.good, m.timing.late, m.timing.early, m.timing.miss, m.timing.wrong, m.timing.on].join() : '';
     if (!flashing && tk !== lastTallyKey) { showTiming(); lastTallyKey = tk; }   // only repaint when it changes

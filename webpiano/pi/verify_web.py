@@ -108,7 +108,7 @@ def main():
               "| scripts:", ev("document.scripts.length"), "| body len:", ev("document.body? document.body.innerHTML.length : -1"))
 
         problems = []
-        mods = ev("[typeof PiTV,typeof PiSound,typeof PiSse,typeof PiCatalog,typeof PiLib,typeof PiNav,typeof PiTransport,typeof PiSetup].join(',')")
+        mods = ev("[typeof PiSession,typeof PiTV,typeof PiSound,typeof PiSse,typeof PiCatalog,typeof PiLib,typeof PiNav,typeof PiTransport,typeof PiSetup].join(',')")
         if "undefined" in (mods or "undefined"):
             problems.append(f"a module is missing: {mods}")
         # catalogue -> selector: PiCatalog.load() populated songs and the selector rendered the grid
@@ -140,6 +140,11 @@ def main():
         title = ev("(document.getElementById('setupTitle')||{}).textContent")
         if not setup:
             problems.append("setup screen did not show after picking a song")
+        # PiSession holds the loaded-song state the other boxes read
+        sess = ev("(PiSession.vm ? 'vm' : '-') + ',' + (PiSession.file ? 'file' : '-') + ',' + (Array.isArray(PiSession.play) ? 'play[' + PiSession.play.length + ']' : '-')")
+        if not (sess and sess.startswith("vm,file,")):
+            problems.append("PiSession not populated after pick: " + str(sess))
+        print("session -> ", sess)
         # transport: entering Setup runs PiTransport.buildLoop -> #loopPanel should be populated
         loopui = ev("var lp=document.getElementById('loopPanel'); !!(lp && lp.querySelector('.hint'))")
         loopbtn = ev("!!document.querySelector('#loopPanel button')")   # bar table present -> Loop button built
@@ -179,7 +184,7 @@ def main():
         errs = ev("JSON.stringify(window.__errs||[])")
         errlist = json.loads(errs or "[]")
 
-        print("modules (PiTV,PiSound,PiSse,PiCatalog,PiLib,PiNav,PiTransport,PiSetup):", mods)
+        print("modules (PiSession,PiTV,PiSound,PiSse,PiCatalog,PiLib,PiNav,PiTransport,PiSetup):", mods)
         print("after ArrowDown -> kbd:", kbd, "| active:", active, "| nav-here:", navhere)
         print("after pick -> setup shown:", setup, "| title:", title)
         print("JS errors / rejections:", errlist if errlist else "none")
