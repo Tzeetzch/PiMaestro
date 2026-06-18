@@ -20,18 +20,17 @@
     for (const kid of kids.flat()) if (kid != null) e.append(kid.nodeType ? kid : document.createTextNode(kid));
     return e;
   }
-  function fmtTime(s) { s = Math.max(0, s | 0); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+  // Nodes the app itself owns. (The Part dropdown #handSel belongs to PiSetup; the position bar
+  // #seek/#seekfill/#time to PiTransport; the library nodes to PiLib — the app reaches none of them.)
   const statusEl = $('status'),
         backBtn = $('quitStage'), playBtn = $('play'), resetBtn = $('reset'),
         viewBtn = $('view'), songLabel = $('song'),
-        handSel = $('handSel'), modeSel = $('modeSel'),
+        modeSel = $('modeSel'),
         speedSel = $('speedSel'), kbdSel = $('kbdSel'), transSel = $('transSel'),
-        scoreEl = $('score'), timeEl = $('time'),
-        seekEl = $('seek'), seekFill = $('seekfill'), namesBtn = $('names'),
+        scoreEl = $('score'), namesBtn = $('names'),
         stage = $('stage'), menu = $('menu'), startBtn = $('startBtn'),
-        favBtn = $('fav'), uploadBtn = $('uploadBtn'), fileInput = $('fileInput'), splitSel = $('splitSel'),
-        menuBack = $('menuBack'), menuSettings = $('menuSettings'), menuTitle = $('menuTitle'), groupTabs = $('groupTabs'), songList = $('songList'),
-        libTitle = $('libTitle'), libSub = $('libSub'),
+        favBtn = $('fav'), splitSel = $('splitSel'),
+        menuBack = $('menuBack'), menuSettings = $('menuSettings'), menuTitle = $('menuTitle'),
         splitField = $('splitField'),
         finish = $('finish'), finStars = $('finStars'), finSub = $('finSub'), finAgain = $('finAgain'), finPick = $('finPick'),
         countin = $('countin'),
@@ -53,7 +52,7 @@
     if (!onStage) {
       for (const k in SCREENS) $(SCREENS[k]).hidden = (k !== name);
       if (name === 'setup') {                       // refresh dynamic bits for this song
-        PiSetup.buildInstr(); PiTransport.buildLoop(); PiSetup.fillSetupHead(); PiSetup.updateModeHint();
+        PiSetup.buildInstr(); PiTransport.buildLoop(); PiSetup.fillSetupHead(); PiSetup.updateModeHint(mode);
         const oneTrack = !!(currentVM && currentVM.rightChan != null && currentVM.rightChan === currentVM.leftChan);
         splitField.style.display = oneTrack ? '' : 'none';
       }
@@ -96,7 +95,7 @@
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       control({ cmd: 'save_settings', file: file, settings: {
-        hand: handSel.value, play: currentPlay, speed: speedSel.value,
+        hand: PiSetup.handValue(), play: currentPlay, speed: speedSel.value,
         transpose: transSel.value, mode: modeSel.value, split: splitSel.value,
       } }).catch(() => {});
     }, 350);
@@ -176,10 +175,10 @@
     if (m.speed != null) { speedSel.value = String(m.speed); PiTV.setClock(m.playing, m.speed); }
     if (m.mode) { modeSel.value = m.mode; mode = m.mode; }
     PiTV.setFreezeMode(mode === 'follow');
-    if (m.hand === 'R' || m.hand === 'L') handSel.value = m.hand;
+    if (m.hand === 'R' || m.hand === 'L') PiSetup.setHand(m.hand);
     if (Array.isArray(m.play)) { currentPlay = m.play.slice(); currentHand = m.hand || null; PiTV.setPlay(currentPlay, currentHand); }
     if (typeof m.pi_muted === 'boolean') PiSound.setPiMute(m.pi_muted);   // reflect the engine's real mute state
-    PiSetup.updateModeHint();
+    PiSetup.updateModeHint(mode);
   }
 
   // Show the octave shift the engine actually applied (esp. when Auto picks one).
@@ -244,7 +243,7 @@
     if (my !== loadSeq) return;                         // superseded while loading
     restoring = false;
     if (!ok) return;
-    if (has && s.hand) handSel.value = s.hand;          // best-effort dropdown label
+    if (has && s.hand) PiSetup.setHand(s.hand);         // best-effort dropdown label
     if (has && s.play) setPlayChannels(s.play, PiSetup.partHand());   // authoritative part selection
     PiTV.setPlay(currentPlay, currentHand);
     control({ cmd: 'speed', mult: +speedSel.value }).catch(() => {});   // sync engine
@@ -281,11 +280,10 @@
   };
   // Visible Back/Quit on the Stage (a TV remote can't discover Esc): pause + open the menu (which has Quit).
   backBtn.onclick = () => { if (playing) playBtn.click(); else openPause(); };
-  handSel.onchange = () => applyParts();
   modeSel.onchange = async () => {
     mode = modeSel.value;
     PiTV.setFreezeMode(mode === 'follow');   // only Follow freezes the local clock at gates
-    PiSetup.updateModeHint();
+    PiSetup.updateModeHint(mode);
     PiTV.setPlay(currentPlay, currentHand);
     saveCurrent();
     try { await control({ cmd: 'mode', mode: mode }); } catch (e) {}
@@ -384,14 +382,14 @@
     if (!loadedFile) return;
     pMode.innerHTML = modeSel.innerHTML; pMode.value = modeSel.value;       // mirror the live (no-reload) controls
     pSpeed.innerHTML = speedSel.innerHTML; pSpeed.value = speedSel.value;
-    pHand.innerHTML = handSel.innerHTML; pHand.value = handSel.value;
+    const hm = PiSetup.handMirror(); pHand.innerHTML = hm.html; pHand.value = hm.value;
     pauseEl.hidden = false;
     if (PiNav.isKbd()) setTimeout(() => PiNav.focusAt(pResume), 0);
   }
   function closePause() { pauseEl.hidden = true; }
   pMode.onchange = () => { modeSel.value = pMode.value; modeSel.onchange(); };   // drive the real controls
   pSpeed.onchange = () => { speedSel.value = pSpeed.value; speedSel.onchange(); };
-  pHand.onchange = () => { handSel.value = pHand.value; handSel.onchange(); };
+  pHand.onchange = () => { PiSetup.setHand(pHand.value); applyParts(); };   // drive the real Part dropdown
   pResume.onclick = () => { closePause(); if (!playing) playBtn.click(); };
   pRestart.onclick = async () => { closePause(); setPlayBtn(false); PiTV.setClock(false); try { await control({ cmd: 'reset' }); } catch (e) {} playBtn.click(); };
   pMore.onclick = () => { closePause(); go('setup'); };
@@ -415,12 +413,13 @@
   PiSetup.init({                                           // the Setup screen: part dropdown + instruments + hero
     getVM: () => currentVM, getPlay: () => currentPlay, getSelFile: () => selFile, control,
     onPlay: (channels) => { setPlayChannels(channels, null); saveCurrent(); },   // player re-picked their tracks
+    onPart: () => applyParts(),                            // player changed the Part dropdown
     coverGlyph: PiCatalog.coverGlyph, coverBg: PiCatalog.coverBg, isFav: PiCatalog.isFav,    // injected — PiSetup never names the catalogue
   });
 
   /* ---- SSE: live keyboard notes + streamed play-position. The transport (connect/reconnect/parse)
      lives in sse.js (PiSse); what follows is just the handlers — what each message DOES. ---- */
-  let lastPct = -1, lastTallyKey = '';
+  let lastTallyKey = '';
   // The pos/hello heartbeat is the one heavy arm — keep it in a named function; the rest are a map.
   function onPos(m) {
     // Only ADOPT the Pi's song on connect when it's actually PLAYING (a real reconnect / a 2nd
@@ -441,13 +440,7 @@
     PiSound.heartbeat(m.t);                                // re-aims the backing scheduler on a backward jump
     if (playing && m.t < 0) { const n = Math.min(3, Math.ceil(-m.t)); countin.firstChild.textContent = n > 0 ? n : ''; countin.hidden = n <= 0; }
     else if (!countin.hidden) countin.hidden = true;
-    const d = currentVM ? currentVM.duration : 0;
-    const pct = d > 0 ? Math.max(0, Math.min(100, m.t / d * 100)) : 0;
-    if (Math.abs(pct - lastPct) >= 0.2) {
-      seekFill.style.width = pct + '%'; seekEl.setAttribute('aria-valuenow', Math.round(pct));
-      seekEl.setAttribute('aria-valuetext', fmtTime(m.t) + ' of ' + fmtTime(d));   // screen reader: time, not bare %
-      timeEl.textContent = fmtTime(m.t) + ' / ' + fmtTime(d); lastPct = pct;
-    }
+    PiTransport.showProgress(m.t, currentVM ? currentVM.duration : 0);   // PiTransport owns the position bar
     timingTally = m.timing;
     const tk = m.timing ? [m.timing.good, m.timing.late, m.timing.early, m.timing.miss, m.timing.wrong, m.timing.on].join() : '';
     if (!flashing && tk !== lastTallyKey) { showTiming(); lastTallyKey = tk; }   // only repaint when it changes

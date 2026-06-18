@@ -60,8 +60,8 @@ mechanically: grepping each module for `Pi<Sibling>.` returns nothing except in 
 | **PiCatalog** (catalog.js) | `control`, `onChange`; `load`/`upload` driven | `songs/meta/isFav/bestOf` (pulled), `coverGlyph/coverBg` | the DOM, the selector, the stage |
 | **PiLib** (pilib.js) | `getSongs`, `getMeta`, `coverGlyph/coverBg`, `onPick`, `onUpload` | `onPick(file)` | where songs *come from*, engine, the stage |
 | **PiNav** (nav.js) | `getView/Playing/VM`, `control`, `go`, `openPause` | focus moves + element actions | what a screen *contains* |
-| **PiTransport** (transport.js) | `getVM`, `control`, `showLoop` | seek / loop commands | PiTV, the play-flow |
-| **PiSetup** (setup.js) | `getVM/Play/SelFile`, `control`, `coverGlyph/coverBg/isFav`, `onPlay` | `onPlay(channels)` | PiLib, PiTV, the stage |
+| **PiTransport** (transport.js) | `getVM`, `control`, `showLoop`, `showProgress` (driven) | seek / loop commands | PiTV, the play-flow |
+| **PiSetup** (setup.js) | `getVM/Play/SelFile`, `control`, `coverGlyph/coverBg/isFav`, `setHand` (driven) | `onPlay(channels)`, `onPart()` | PiLib, PiTV, the stage |
 | **app.js** | — (the root) | — | *(may know every box)* |
 
 The Pi side already obeys the same rule with the same two-root shape: **ScoreKeeper / _Synth / Song /
@@ -72,9 +72,14 @@ midifile / notation** are pure (know nothing of each other); **Conductor** compo
   `finalize(t, gates, now)`, `tally`. OUT: `rating` frames via the `on_state` callback. Knows nothing of
   the clock or the gates — the conductor passes them in. Split out so gating ≠ scoring.
 
-Known seams (not yet boxed): `handSel`/`modeSel`/`#seek` are DOM nodes two boxes both write (app's state
-machine + PiSetup/PiTransport); and the performance settings (`currentVM/Play/mode/transpose/split`) are
-loose vars in `app.js` exposed through getters rather than a first-class `PiSession` box.
+DOM ownership: each shared node has exactly one owner — the box that *renders* it. The Part dropdown
+`#handSel` is PiSetup's (the app restores/reads it via `setHand`/`handValue`/`handMirror` and reacts to
+`onPart`); the position bar `#seek`/`#seekfill`/`#time` is PiTransport's (the app's heartbeat drives it
+through `showProgress`); `#modeSel` is the app's (PiSetup gets the mode as a `updateModeHint(mode)` arg,
+never reads the node).
+
+Known seam (not yet boxed): the performance settings (`currentVM/Play/mode/transpose/split`) are loose
+vars in `app.js` exposed through getters rather than a first-class `PiSession` box.
 
 ## Load-time precompute vs play-time stream (the performance contract)
 

@@ -166,6 +166,15 @@ def main():
         if not (modehint and len(modehint) > 5):
             problems.append("mode hint empty (PiSetup.updateModeHint)")
         print("setup -> part opts:", partopts, "| instr rows:", instrrows, "| hero:", herotitle, "| mode hint set:", bool(modehint))
+        # ownership cleanup: changing the Part dropdown (PiSetup owns it -> onPart) must not throw,
+        # and the position bar readout (PiTransport.showProgress) must paint without throwing.
+        partchg = ev("try{var h=document.getElementById('handSel'); if(h&&h.options.length>1){h.selectedIndex=1; h.dispatchEvent(new Event('change'));} 'ok'}catch(e){'THROW: '+e}")
+        progok = ev("try{PiTransport.showProgress(5,10); var w=document.getElementById('seekfill').style.width; (w&&w!=='0%')?'ok':'no-paint:'+w}catch(e){'THROW: '+e}")
+        if partchg != "ok":
+            problems.append("Part-dropdown change threw: " + str(partchg))
+        if progok != "ok":
+            problems.append("showProgress issue: " + str(progok))
+        print("ownership -> part change:", partchg, "| showProgress paint:", progok)
 
         errs = ev("JSON.stringify(window.__errs||[])")
         errlist = json.loads(errs or "[]")
