@@ -53,7 +53,7 @@ const PiNav = (function () {
     const view = ctx.getView();
     if (view === 'setup' && vis(startBtn)) return focusAt(startBtn);          // primary action ("Play now") first
     if (view === 'library') { const sel = songList.querySelector('.songitem.on'); if (vis(sel)) return focusAt(sel); }
-    const c = navCols(); if (c.length && c[0].length) focusAt(c[0][0]);
+    const c = navCols(); for (const col of c) { if (col.length) { focusAt(col[0]); return; } }   // first NON-EMPTY column (an empty rail must not strand focus before Upload)
   }
   function navMove(dRow, dCol) {
     const cols = navCols(); if (!cols.length) return;
@@ -106,7 +106,8 @@ const PiNav = (function () {
       case 'ArrowLeft': kbd = true; navMove(0, -1); e.preventDefault(); break;
       case 'ArrowRight': kbd = true; navMove(0, 1); e.preventDefault(); break;
       case 'Enter':
-        if (ae && tag !== 'SELECT' && ae.click) { ae.click(); e.preventDefault(); }
+        // a synthetic .click() on the seek bar would arrive with clientX=0 -> seek to 0 (restart). Skip it.
+        if (ae && tag !== 'SELECT' && ae !== seekEl && ae.click) { ae.click(); e.preventDefault(); }
         break;
       case 'Backspace': case 'Escape':
         kbd = true;

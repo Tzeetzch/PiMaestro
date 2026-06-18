@@ -83,7 +83,7 @@
   let mode = 'follow', playing = false;
   let transpose = 'auto';                       // octave shift to fit the keyboard ('auto' or semitones)
   let split = 60;                               // left/right hand + treble/bass split pitch (middle C)
-  let restoring = false;                        // suppress auto-save while applying saved settings
+  let restoring = false, restoreSeq = 0;        // suppress auto-save while applying saved settings (restoreSeq = the load that owns the flag)
   let loadSeq = 0;                              // monotonic load token; a stale async load bails instead of clobbering
   let lastT = 0;                                // last streamed play position (for keyboard seek)
   function kbdRange() { return KBD_RANGES[kbdSel.value] || KBD_RANGES[88]; }
@@ -94,13 +94,14 @@
   function saveCurrent() {
     if (restoring || !PiSession.file) return;
     const file = PiSession.file;
+    // Snapshot WHAT to save NOW, not at fire time — so a song switch within the 350ms debounce
+    // can't persist this song's file with the next song's settings.
+    const settings = {
+      hand: PiSetup.handValue(), play: PiSession.play.slice(), speed: speedSel.value,
+      transpose: transSel.value, mode: modeSel.value, split: splitSel.value,
+    };
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      control({ cmd: 'save_settings', file: file, settings: {
-        hand: PiSetup.handValue(), play: PiSession.play, speed: speedSel.value,
-        transpose: transSel.value, mode: modeSel.value, split: splitSel.value,
-      } }).catch(() => {});
-    }, 350);
+    saveTimer = setTimeout(() => { control({ cmd: 'save_settings', file: file, settings: settings }).catch(() => {}); }, 350);
   }
 
   /* ---- saved preferences (keyboard size + speed) ---- */
@@ -228,10 +229,11 @@
     const my = ++loadSeq;                               // claim this load; a newer pick invalidates us
     setPlayBtn(false);
     selFile = file; PiLib.select(file);                 // highlight it in the rail
-    restoring = true;                                   // suppress auto-save during restore
+    restoring = true; restoreSeq = my;                  // suppress auto-save during restore; we own the flag
+    const release = () => { if (restoreSeq === my) restoring = false; };   // only clear if a newer load hasn't taken over
     let s = {};
     try { s = await (await fetch('/settings?file=' + encodeURIComponent(file))).json(); } catch (e) {}
-    if (my !== loadSeq) return;                         // a newer selectSong started during the fetch
+    if (my !== loadSeq) { release(); return; }          // a newer selectSong started during the fetch
     const has = s && Object.keys(s).length;
     if (has && s.speed) speedSel.value = s.speed;       // else: speed carries over
     transSel.value = (has && s.transpose) ? s.transpose : 'auto';   // fresh song -> auto-fit
@@ -242,8 +244,8 @@
     mode = modeSel.value;
     PiTV.setFreezeMode(mode === 'follow');
     const ok = await loadSong(file, false, my);         // builds vm with that transpose/range (same token)
-    if (my !== loadSeq) return;                         // superseded while loading
-    restoring = false;
+    if (my !== loadSeq) { release(); return; }          // superseded while loading
+    release();
     if (!ok) return;
     if (has && s.hand) PiSetup.setHand(s.hand);         // best-effort dropdown label
     if (has && s.play) setPlayChannels(s.play, PiSetup.partHand());   // authoritative part selection
