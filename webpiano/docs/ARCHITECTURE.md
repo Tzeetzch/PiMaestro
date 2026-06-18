@@ -28,6 +28,10 @@ MIDI keyboard ──ALSA──▶ FluidSynth (TCP :9800, -a pipewire) ──▶ 
 - **engine/song.py** — `build_view_model(path, transpose, kbd_lo, kbd_hi, split)` → the **view-model (VM)**:
   every note in **seconds** with staff/idx/accidental/symbol/hand/velocity, plus beats, bars, key/time sig,
   detected hands, auto octave-fit. Built ONCE per load.
+- **engine/gp.py** — Guitar Pro importer (.gp3/.gp4/.gp5 via the `pyguitarpro` package). Produces the
+  **same VM** as song.py, so the whole engine is format-agnostic — `build_view_model` dispatches by
+  extension (`.gp*` → gp.py, else MIDI). GP files carry explicit durations/voices, so notation is read,
+  not inferred. (Runtime dep on the Pi: `pip install --user --break-system-packages pyguitarpro`.)
 - **engine/notation.py** — pure pitch→stave-position logic, ported from PianoBooster's StavePosition.cpp.
 - **engine/conductor.py** — the brain. Owns the clock, Follow-You gates, accompaniment scheduling,
   early/good/late rating, loop/seek/speed/transpose. Streams state through a callback the server broadcasts.

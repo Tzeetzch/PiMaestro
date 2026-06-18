@@ -187,6 +187,9 @@ def build_view_model(path: str, transpose=0, kbd_lo=None, kbd_hi=None, split=MID
     shift is returned as vm['transpose'].
     split: the pitch boundary between left/right hand AND treble/bass staff (default
     middle C); used per-note for the hand fallback (single-channel songs) and the staff."""
+    if path.lower().endswith((".gp3", ".gp4", ".gp5")):    # Guitar Pro -> same view-model, via gp.py
+        from . import gp                                   # lazy import: avoids a circular dependency
+        return gp.build_view_model(path, transpose, kbd_lo, kbd_hi, split)
     try:
         split = max(21, min(108, int(split)))
     except (TypeError, ValueError):

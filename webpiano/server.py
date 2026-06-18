@@ -57,7 +57,7 @@ class SongCatalog:
                 continue
             for dirpath, _dirs, files in os.walk(root):
                 for fn in files:
-                    if fn.lower().endswith((".mid", ".midi")):
+                    if fn.lower().endswith((".mid", ".midi", ".gp3", ".gp4", ".gp5")):
                         full = os.path.realpath(os.path.join(dirpath, fn))   # canonical = library key
                         order, label = self._group_label(full)
                         songs.append({"title": os.path.splitext(fn)[0].replace("_", " "),
@@ -67,7 +67,7 @@ class SongCatalog:
 
     def is_allowed(self, path):
         real = os.path.realpath(path)
-        return (real.lower().endswith((".mid", ".midi"))
+        return (real.lower().endswith((".mid", ".midi", ".gp3", ".gp4", ".gp5"))
                 and any(real == r or real.startswith(r + os.sep) for r in self.roots))
 
 
@@ -299,8 +299,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _upload(self, qs):
         name = (qs.get("name") or [""])[0]
         base = os.path.basename(name).strip()
-        if not base.lower().endswith((".mid", ".midi")):
-            self.send_error(400, "need a .mid or .midi file"); return
+        if not base.lower().endswith((".mid", ".midi", ".gp3", ".gp4", ".gp5")):
+            self.send_error(400, "need a .mid/.midi or .gp3/.gp4/.gp5 file"); return
         safe = re.sub(r"[^A-Za-z0-9 ._-]", "_", base)[:120] or "upload.mid"
         try:
             length = int(self.headers.get("Content-Length", 0) or 0)
