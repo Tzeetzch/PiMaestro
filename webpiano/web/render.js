@@ -108,24 +108,12 @@ const PiTV = (function () {
   function attachCanvas(c) {
     canvas = c; ctx = c.getContext('2d');
     resize(); addEventListener('resize', resize);
-    if (window.ResizeObserver) new ResizeObserver(() => resize()).observe(canvas);   // re-size on show/hide too, not just window resize
     requestAnimationFrame(frame);
-    window.PiRenderDbg = () => ({ drawCost: Math.round(drawCost * 100) / 100, resScale: Math.round(resScale * 1000) / 1000, dirty });   // lightweight perf probe
+    window.PiRenderDbg = () => ({ drawMs: Math.round(drawMs * 100) / 100, backing: canvas.width + 'x' + canvas.height, now });   // draw-cost probe
   }
-  // RESOLUTION-INDEPENDENT rendering. All geometry/drawing happens in LOGICAL (CSS-pixel) coordinates
-  // that never change with quality. The backing store is logical * baseScale * resScale, and the 2D
-  // context is pre-scaled by (backing / logical) so a logical coordinate always lands on the same spot
-  // on screen. Lowering resScale therefore changes ONLY sharpness (fewer real pixels), never the size
-  // or position of anything — no zoom. resScale is the live 60fps quality knob (RES_MIN..1).
-  const RES_MIN = 0.5, RES_MAX = 0.72;   // start near 720p-equivalent (known-smooth on the Pi at 1080p out)
-  let baseScale = 1, resScale = RES_MAX, dbgNowLx = 0;
-  let logicalW = 1, logicalH = 1, scaleX = 1, scaleY = 1, staticW = -1, staticH = -1;
-  function computeScale() {
-    logicalW = canvas.clientWidth || canvas.width || 1;
-    logicalH = canvas.clientHeight || canvas.height || 1;
-    scaleX = canvas.width / logicalW;
-    scaleY = canvas.height / logicalH;
-  }
+  // Backing store = CSS px (capped near 1080p) times resScale; rendering is in backing pixels directly
+  // (resScale stays 1 = native — a sub-native render that the browser upscales judders the scroll).
+  let baseScale = 1, resScale = 1;
   function resize() {
     if (!canvas) return;
     const cw = canvas.clientWidth, ch = canvas.clientHeight;
@@ -136,12 +124,10 @@ const PiTV = (function () {
     const w = Math.max(1, Math.round(canvas.clientWidth * baseScale * resScale));
     const h = Math.max(1, Math.round(canvas.clientHeight * baseScale * resScale));
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; staticDirty = true; }
-    computeScale();
     dirty = true;
   }
   function setSong(vm) {
     song = vm; now = -LOOKAHEAD; setWanted([]); dirty = true; staticDirty = true;
-    resScale = RES_MAX; frameMs = 16.7; lastDrawTs = null; settle = 20; if (canvas) applyRes();   // fresh quality budget per song
     const N = (vm.notes && vm.notes.length) || 0;
     // Drum chart? render the percussion staff when the notes on screen are all GM channel-10 drums —
     // either a drum-only file, or the drum PART of a full song once it's the selected part (see setPlay).
@@ -160,8 +146,7 @@ const PiTV = (function () {
     // ENGRAVING LAYOUT: group near-simultaneous notes into columns ("slots"), and lay them out
     // with a MINIMUM gap so dense bars GROW to fit their notes (sparse passages stay beat-spaced).
     // lx is the column's horizontal position in beat-units; anchT/anchLx map real time -> lx so
-    // the playhead stays time-correct (scroll just speeds up through dense bars). game view is
-    // unaffected (it uses time directly).
+    // the playhead stays time-correct. game view is unaffected (it uses time directly).
     const SLOT_EPS = 0.030, MIN_GAP = 0.30;
     const anchT = [], anchLx = [];
     let slotT = -1e9, slotLx = 0, prevB = 0, first = true;
@@ -253,7 +238,9 @@ const PiTV = (function () {
     // This stops the freeze-clamp from fighting the correction — the cause of overshoot-then-jitter
     // around a note when you hold the key early.
     while (freezeMode && gatePtr < gateTimes.length && t > gateTimes[gatePtr] + 0.02) gatePtr++;
-    now += (t - now) * 0.18;
+    // TEST: heartbeat correction DISABLED — the local clock free-runs (rAF integrates real time);
+    // we only re-sync on the discrete snap above (seek/pause/loop, |diff|>0.5). If this is smooth on
+    // the laptop, the jitter was the continuous network-coupled correction (solution #1 confirmed).
     dirty = true;
   }
   // While frozen at a gate, light the keys you owe — computed locally so the amber is instant.
@@ -482,11 +469,10 @@ const PiTV = (function () {
 
   // R.2: draw the unchanging layer (staff lines + clefs + time/key sig) into the offscreen
   // canvas once. Reuses the same strip/accidental code by pointing `ctx` at the offscreen.
-  function buildStaticLayer(W, H, g) {               // W,H logical; render at backing res in logical coords
+  function buildStaticLayer(W, H, g) {
     if (!staticCv) staticCv = document.createElement('canvas');
-    staticCv.width = Math.max(1, Math.round(W * scaleX)); staticCv.height = Math.max(1, Math.round(H * scaleY));
+    staticCv.width = W; staticCv.height = H;
     const save = ctx; ctx = staticCv.getContext('2d');
-    ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
     ctx.clearRect(0, 0, W, H);
     const { step, s, trebleC, bassC, x0, clefX, tsX, ksX, ksGap, key, nAcc, endX, yOf } = g;
     // staff lines (5 each, full width) + left joining line
@@ -524,10 +510,10 @@ const PiTV = (function () {
 
   class NotationView {
     // Per-variant overrides: geom(W,H) buildStatic(W,H,g) drawHead(nt,x,g,i)->stemSpec visible(nt) playedYs(g)
-    render(W, H) {                                    // W,H are LOGICAL dims (ctx is pre-scaled to backing)
+    render(W, H) {
       const g = this.geom(W, H);
-      if (staticDirty || !staticCv || staticW !== W || staticH !== H) { this.buildStatic(W, H, g); staticW = W; staticH = H; }
-      ctx.drawImage(staticCv, 0, 0, staticCv.width / scaleX, staticCv.height / scaleY);   // blit cached staff 1:1 (exact, no rounding drift)
+      if (staticDirty || !staticCv || staticCv.width !== W || staticCv.height !== H) this.buildStatic(W, H, g);
+      ctx.drawImage(staticCv, 0, 0);                  // blit the cached staff + header
       if (!song) return;
       const { step, s, scrollX, endX, playX, markTop, markBot, staves, barNumY } = g;
       // ---- scrolling region (engraving-spaced; clipped so it can't bleed into the header) ----
@@ -535,7 +521,7 @@ const PiTV = (function () {
       const aT = vmLay.anchT || [], aLx = vmLay.anchLx || [];   // real time <-> layout-x anchors
       const BEATS_AHEAD = 8;
       const ppb = Math.max(24, (endX - playX) / BEATS_AHEAD);   // px per layout unit
-      const nowLx = interp(aT, aLx, now); dbgNowLx = nowLx;
+      const nowLx = interp(aT, aLx, now);
       const bx = lx => playX + (lx - nowLx) * ppb;
       const behind = (playX - scrollX) / ppb + 1;
       // collect ~2 layout-units (≥ a beat) PAST each edge so a beam group is fully formed before it
@@ -717,11 +703,10 @@ const PiTV = (function () {
                markTop: yOf(8), markBot: yOf(-8),
                staves: [{ top: yOf(4), bot: yOf(-4) }], barNumY: yOf(4) - 1.6 * step };
     }
-    buildStatic(W, H, g) {                             // W,H logical; render at backing res in logical coords
+    buildStatic(W, H, g) {
       if (!staticCv) staticCv = document.createElement('canvas');
-      staticCv.width = Math.max(1, Math.round(W * scaleX)); staticCv.height = Math.max(1, Math.round(H * scaleY));
+      staticCv.width = W; staticCv.height = H;
       const save = ctx; ctx = staticCv.getContext('2d');
-      ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
       ctx.clearRect(0, 0, W, H);
       const { step, s, x0, clefX, tsX, endX, yOf } = g, top = yOf(4), bot = yOf(-4);
       ctx.strokeStyle = C_STAVE; ctx.lineWidth = Math.max(1, s);
@@ -767,21 +752,17 @@ const PiTV = (function () {
 
   /* ---- frame ---- */
   function draw() {
-    if (!canvas.clientWidth || !canvas.clientHeight) return;   // hidden / not laid out — skip (don't waste a frame)
-    computeScale();
-    if (logicalW < 2 || logicalH < 2) return;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);                       // clear in device pixels
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);             // then draw everything in LOGICAL coordinates
-    if (view === 'notation') (drumMode ? drumView : pianoView).render(logicalW, logicalH);
-    else drawGame(logicalW, logicalH);
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    if (view === 'notation') (drumMode ? drumView : pianoView).render(W, H);
+    else drawGame(W, H);
   }
   // Hold 60fps the way game engines do: draw EVERY frame (never skip — motion stays smooth), but
   // adapt the render RESOLUTION to the budget. We track a smoothed draw cost; if it creeps toward the
   // ~16.6ms 60fps budget we shrink resScale (fewer pixels next frame), and when there's slack we grow
   // it back toward full. A 9–15ms dead-zone keeps it from oscillating. The clock advances every rAF,
   // so timing is exact regardless of resolution.
-  let drawCost = 4, frameMs = 16.7, lastDrawTs = null, settle = 0;
+  let drawMs = 0;
   function frame(ts) {
     requestAnimationFrame(frame);
     if (clockOn && clockPlaying) {                 // R.4: advance the local clock, freezing at gates
@@ -793,23 +774,7 @@ const PiTV = (function () {
       lastTs = ts;
     } else lastTs = null;
     if (clockOn) refreshWantedLocal();
-    if (ctx && dirty) {
-      // Dynamic quality: hold 60fps by watching the REAL frame cadence (gap between painted frames),
-      // NOT the ~1ms draw-call time (which never sees the async GPU). When we miss the ~16.7ms vsync
-      // (the compositor throttles us to ~33ms once the GPU can't keep up), step resScale DOWN a notch.
-      // Down-only within a song (no up-hunting => no shimmer); setSong resets to RES_MAX. Because the
-      // renderer is resolution-independent, a step changes sharpness only — never size (no zoom).
-      if (lastDrawTs != null) { const dt = ts - lastDrawTs; if (dt > 0 && dt < 200) frameMs += (dt - frameMs) * 0.15; }
-      lastDrawTs = ts;
-      if (settle > 0) settle--;
-      else if (frameMs > 22 && resScale > RES_MIN) {
-        resScale = Math.max(RES_MIN, Math.round((resScale - 0.1) * 100) / 100);
-        applyRes(); frameMs = 16.7; settle = 15;                        // ignore the rescale frame itself
-      }
-      const t0 = performance.now();
-      draw(); dirty = false;
-      drawCost += ((performance.now() - t0) - drawCost) * 0.1;          // perf probe only
-    }
+    if (ctx && dirty) { const t0 = performance.now(); draw(); dirty = false; drawMs += ((performance.now() - t0) - drawMs) * 0.1; }   // render at native res; track draw cost
   }
 
   return { buildKeyboard, highlight, flashWrong, attachCanvas, setSong, setPlayed, setView, setPlay, setRange, setLoop, setNames,
