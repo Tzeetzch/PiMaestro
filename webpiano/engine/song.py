@@ -18,6 +18,7 @@ from .notation import note_pos, note_type, note_name
 DEFAULT_TEMPO = 500_000          # usec per quarter note == 120 bpm, until the file says otherwise
 MIDDLE_C = 60                    # provisional hand split (real hand selection is M2)
 CHORD_EPS = 0.035                # notes starting within this many seconds == one chord
+MAX_NOTES = 100_000              # cap the view-model; a real song is thousands. Guards a hostile/huge file.
 
 
 def _tempo_map(tracks, ppqn):
@@ -202,6 +203,9 @@ def build_view_model(path: str, transpose=0, kbd_lo=None, kbd_hi=None, split=MID
                 programs[e.channel] = e.a
 
     raw = _raw_notes(pm.tracks)
+    if len(raw) > MAX_NOTES:                             # oversized/hostile file: keep the earliest notes,
+        raw.sort(key=lambda r: r[3])                     # don't build a multi-hundred-MB view-model / JSON
+        del raw[MAX_NOTES:]
     left, right = _detect_hands(raw, programs)           # ported piano-hand channel detection
 
     # how far to shift: auto-fit the player's part to their keyboard, or an explicit amount

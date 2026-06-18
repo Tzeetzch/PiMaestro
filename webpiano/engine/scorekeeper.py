@@ -57,7 +57,11 @@ class ScoreKeeper:
                 self._arrival = now                               # chord reached the line now
             sel, ok = [], True
             for w in wanted:
-                cands = [(pt, rt) for (pt, pp, rt) in self._played if pp == w and pt >= gt - EARLY_WINDOW]
+                # a press counts for this chord only within its window: from EARLY_WINDOW before the line
+                # to RATE_GIVEUP after it. Without the upper bound, a LATER press of the same pitch (the
+                # next time that note occurs) could retroactively "satisfy" a chord the player actually missed.
+                cands = [(pt, rt) for (pt, pp, rt) in self._played
+                         if pp == w and gt - EARLY_WINDOW <= pt <= gt + self.RATE_GIVEUP]
                 if not cands:
                     ok = False
                     break

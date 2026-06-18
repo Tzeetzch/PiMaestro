@@ -121,6 +121,7 @@ POWER = PowerControl()
 
 clients = []
 clients_lock = threading.Lock()
+MAX_SSE_CLIENTS = 24             # a TV + a few tablets is normal; cap so a LAN flood can't exhaust threads/queues
 # aseqdump prints note-OFF with no velocity field ("Note off  0, note 69"), so velocity
 # is optional here — otherwise note-offs never match and keys/sound never release.
 NOTE_RE = re.compile(r"Note (on|off)\b.*?note (\d+)(?:.*?velocity (\d+))?", re.I)
@@ -227,11 +228,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (ValueError, OSError):
             self.send_error(400, "bad json")
             return
+        if not isinstance(req, dict):
+            self.send_error(400, "bad json"); return
         handler = self._CONTROL.get(req.get("cmd"))
-        if handler:
+        if not handler:
+            self.send_error(400, "unknown cmd"); return
+        try:
             handler(self, req)
-        else:
-            self.send_error(400, "unknown cmd")
+        except Exception as e:                                  # a malformed field (bad channels/lo/hi/program)
+            self.send_error(400, f"bad request: {e}")           # -> 400, never a crashed handler thread
 
     # --- /control command handlers (registered in the _CONTROL dispatch table at the end) ---
     def _c_load(self, req):
@@ -360,11 +365,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _sse(self):
+        with clients_lock:
+            full = len(clients) >= MAX_SSE_CLIENTS               # cap fan-out: a LAN flood can't exhaust threads/mem
+        if full:
+            self.send_error(503, "too many clients"); return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
+        # A wedged-but-open client (frozen TV, half-open NAT) would otherwise block wfile.write
+        # forever, pinning this thread + leaking its queue. Time the socket out so it falls through
+        # to the finally and is cleaned up.
+        try:
+            self.connection.settimeout(30)
+        except OSError:
+            pass
         # The client runs its own playback clock, so it only needs the position frame as a
         # low-rate heartbeat. Throttle `pos` to ~4 Hz, but ALWAYS pass a frame that changed
         # play-state, switched song (file), was tagged seek=True (seek/loop/reset/load), or

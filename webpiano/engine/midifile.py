@@ -20,6 +20,10 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 
+# A real song is a few thousand events per track; this only bounds a malformed/hostile file so a
+# bad download can't drive unbounded memory or an O(n^2) pairing blowup. Truncate gracefully (like EOF).
+MAX_EVENTS_PER_TRACK = 300_000
+
 
 @dataclass
 class Event:
@@ -84,6 +88,8 @@ def _parse_track(data: bytes, start: int, end: int):
 
     try:
       while r.i < end:
+        if len(events) >= MAX_EVENTS_PER_TRACK:    # pathological/hostile file — keep what we have, stop
+            break
         abstick += r.varlen()
         c = r.byte()
         if c & 0x80:
