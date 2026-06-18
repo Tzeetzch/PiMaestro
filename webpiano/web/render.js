@@ -568,10 +568,13 @@ const PiTV = (function () {
         const map = new Map(), cols = [];
         for (const o of sub) {                          // collapse notes sharing an x into one stem-column
           const k = Math.round(o.x), c = map.get(k);
-          if (!c) { const nc = { x: o.x, lo: o.y, hi: o.y, f: o.flags, w: o.w, col: o.col, beat: nbound(beats, o.t + 1e-4) }; map.set(k, nc); cols.push(nc); }
-          else { c.lo = Math.min(c.lo, o.y); c.hi = Math.max(c.hi, o.y); c.f = Math.max(c.f, o.flags); c.w = Math.max(c.w, o.w); if (o.col === C_WANT) c.col = C_WANT; }
+          if (!c) { const nc = { x: o.x, lo: o.y, hi: o.y, topX: o.cross, f: o.flags, w: o.w, col: o.col, beat: nbound(beats, o.t + 1e-4) }; map.set(k, nc); cols.push(nc); }
+          else { if (o.y < c.lo) { c.lo = o.y; c.topX = o.cross; } if (o.y > c.hi) c.hi = o.y; c.f = Math.max(c.f, o.flags); c.w = Math.max(c.w, o.w); if (o.col === C_WANT) c.col = C_WANT; }
         }
         cols.sort((a, b) => a.x - b.x);
+        // stem attaches at the lower-head side for up-stems; for down-stems at the TOP of the top head
+        // (the top of the X for a cymbal/hi-hat — Songsterr style), so the stick meets the cross cleanly.
+        const top = c => up ? c.hi : c.lo - (c.topX ? 5 : 3) * s;
         let i = 0;
         while (i < cols.length) {
           let j = i;
@@ -579,15 +582,15 @@ const PiTV = (function () {
           if (cols[i].f > 0 && j > i) {                 // BEAM a run of >= 2 columns
             let beamY = up ? 1e9 : -1e9;                // flat beam at the extreme stem-end
             for (let k = i; k <= j; k++) { const e = up ? cols[k].lo - STEM : cols[k].hi + STEM; beamY = up ? Math.min(beamY, e) : Math.max(beamY, e); }
-            for (let k = i; k <= j; k++) { const c = cols[k], sx = c.x + (up ? NW : -NW); seg(sp(c.col), sx, up ? c.hi : c.lo, sx, beamY); if (c.w >= 100) accent(c.x, up ? beamY - 7 * s : beamY + 7 * s); }
+            for (let k = i; k <= j; k++) { const c = cols[k], sx = c.x + (up ? NW : -NW); seg(sp(c.col), sx, top(c), beamY); if (c.w >= 100) accent(c.x, up ? beamY - 7 * s : c.lo - 13 * s); }
             seg(beamP, cols[i].x + (up ? NW : -NW), beamY, cols[j].x + (up ? NW : -NW), beamY);
             const off = (up ? 1 : -1) * 5 * s;
             for (let k = i; k < j; k++) if (cols[k].f >= 2 && cols[k + 1].f >= 2) seg(beam2, cols[k].x + (up ? NW : -NW), beamY + off, cols[k + 1].x + (up ? NW : -NW), beamY + off);
           } else {                                      // plain stem (+ flag if a lone 8th/16th)
             const c = cols[i], sx = c.x + (up ? NW : -NW), end = up ? c.lo - STEM : c.hi + STEM;
-            seg(sp(c.col), sx, up ? c.hi : c.lo, sx, end);
+            seg(sp(c.col), sx, top(c), end);
             for (let f = 0; f < c.f; f++) { const fy = end + (up ? 1 : -1) * f * 8 * s; seg(sp(c.col), sx, fy, sx + 8 * s, fy + (up ? 14 : -14) * s); }
-            if (c.w >= 100) accent(c.x, up ? c.lo - 14 * s : c.hi + 14 * s);
+            if (c.w >= 100) accent(c.x, up ? end - 7 * s : c.lo - 13 * s);
           }
           i = j + 1;
         }
@@ -624,7 +627,7 @@ const PiTV = (function () {
       const col = verdict ? verdict
         : (Math.abs(nt.t - now) < 0.06 && wantedSet[nt.n]) ? C_WANT : (mine ? C_NOTE : C_DIM);
       const t = nt.sym, dotted = t.charAt(t.length - 1) === '.', base = dotted ? t.slice(0, -1) : t;
-      const spec = base === 'w' ? null : { x, y, up: true, flags: flagsOf(nt.sym), w: nt.v || 0, col };   // grand staff: stems up; whole notes have none
+      const spec = base === 'w' ? null : { x, y, up: true, flags: flagsOf(nt.sym), w: nt.v || 0, col, cross: false };   // grand staff: stems up; whole notes have none
       if (!onScreen) return spec;                     // margin note (kept only so its beam group is complete)
       const solid = base !== 'h' && base !== 'w';
       const c = nt.staff === 'treble' ? trebleC : bassC, lw = 12 * s;
@@ -699,7 +702,7 @@ const PiTV = (function () {
       const dm = DRUM_MAP[nt.n] || DRUM_FALLBACK, y = yOf(dm.pos);
       const col = (Math.abs(nt.t - now) < 0.06) ? C_WANT : C_NOTE;
       if (onScreen) this.glyph(dm, x, y, s, col);
-      return { x, y, up: dm.v !== 'dn', flags: flagsOf(nt.sym), w: nt.v || 0, col };   // hands stem up, feet down
+      return { x, y, up: false, flags: flagsOf(nt.sym), w: nt.v || 0, col, cross: dm.g === 'x' };   // drums: all stems DOWN (Songsterr style)
     }
   }
 
