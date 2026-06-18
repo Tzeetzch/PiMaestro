@@ -32,7 +32,8 @@ MIDI keyboard ──ALSA──▶ FluidSynth (TCP :9800, -a pipewire) ──▶ 
 - **engine/conductor.py** — the brain. Owns the clock, Follow-You gates, accompaniment scheduling,
   early/good/late rating, loop/seek/speed/transpose. Streams state through a callback the server broadcasts.
 - **web/render.js** (PiTV) — canvas view (notation + falling-notes game). Consumes the VM; **never
-  recomputes timing or musical layout**. Precomputes its engraving layout once in `setSong`.
+  recomputes timing/matching/scoring**. Precomputes its display-only engraving layout once in `setSong`,
+  into a render-owned side-store (`vmLay`) — never written back onto the VM.
 - **web/app.js** — the **composition root** + play-flow orchestrator: the load/select state machine,
   play/pause/reset, the pause + end-of-song reward screens, the screen router, and the SSE handlers.
   The browser logic was carved into single-concern boxes (below); `app.js` is the only one that knows
@@ -92,9 +93,11 @@ recompute** — at ~40 Hz (`TICK`) the conductor only advances `_t`, checks the 
 precomputed accompaniment list, and emits a tiny `pos` frame. The browser windows the precomputed notes by
 binary search and draws. Pressing Start runs a script; it does not build one.
 
-Invariant: **new timing/matching logic goes in the conductor, not the browser. New per-note data flows
-one-way through the VM. render.js never computes anything musical** (the lone exception is `staffPos`, a
-display-only mapping for live-pressed keys, which has no bearing on scoring).
+Invariant: **new timing/matching logic goes in the conductor, not the browser. The VM flows one-way and
+read-only; render.js never computes timing, matching, or scoring.** render.js DOES compute display-only
+geometry — the horizontal engraving/column layout in `setSong`, and `staffPos` for live keys — but this
+only affects on-screen spacing, never the clock/gates/scoring, and it is kept in a render-owned side-store
+(`vmLay`), **not written back onto the VM** (the VM is also `PiSession` state that app/PiSound read).
 
 ## SSE frame taxonomy
 

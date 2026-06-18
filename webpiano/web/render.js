@@ -50,6 +50,12 @@ const PiTV = (function () {
 
   /* ---- shared playback state (set from the streamed position) ---- */
   let canvas, ctx, song = null, view = 'notation', drumMode = false;
+  // Render-OWNED engraving layout for the current song, rebuilt in setSong — kept OFF the VM so the
+  // engine's payload stays a read-only one-way model (the same VM object is PiSession state that
+  // app/PiSound read; render must not decorate it). Index-parallel to song.notes: lx (column x in
+  // beat-units, monotonic ↑), top (chord-top, for the name chip), nmW/nmFh (lazy name-width cache);
+  // plus song-level anchT/anchLx (time↔lx) + maxDur (windowing margin) + allDrum/hasDrums.
+  let vmLay = { lx: [], top: [], nmW: [], nmFh: [], anchT: [], anchLx: [], maxDur: 0, allDrum: false, hasDrums: false };
   let now = -LOOKAHEAD, waiting = false, wanted = [], dirty = true, playSet = null;
   let loopA = null, loopB = null;            // loop region (seconds), or null
   let playHand = null;                       // 'R'/'L' to emphasise one hand of a 1-channel part
@@ -83,10 +89,13 @@ const PiTV = (function () {
   }
   function setSong(vm) {
     song = vm; now = -LOOKAHEAD; setWanted([]); dirty = true; staticDirty = true;
+    const N = (vm.notes && vm.notes.length) || 0;
     // Drum chart? render the percussion staff when the notes on screen are all GM channel-10 drums —
     // either a drum-only file, or the drum PART of a full song once it's the selected part (see setPlay).
-    vm._allDrum = !!(vm.notes && vm.notes.length && vm.notes.every(n => n.ch === 9));
-    vm._hasDrums = !!(vm.notes && vm.notes.some(n => n.ch === 9));
+    vmLay = { lx: new Array(N), top: new Array(N).fill(false), nmW: new Array(N), nmFh: new Array(N),
+              anchT: [], anchLx: [], maxDur: 0,
+              allDrum: !!(N && vm.notes.every(n => n.ch === 9)),
+              hasDrums: !!(N && vm.notes.some(n => n.ch === 9)) };
     recomputeDrumMode();
     gateTimes = (vm && vm.gates) || []; gatePtr = firstGateAtOrAfter(now); lastFrozen = -1;   // R.4: gates ship in the VM
     ratedGates = {};   // verdicts belong to the previous song
@@ -97,13 +106,13 @@ const PiTV = (function () {
     let maxDur = 0;
     // ENGRAVING LAYOUT: group near-simultaneous notes into columns ("slots"), and lay them out
     // with a MINIMUM gap so dense bars GROW to fit their notes (sparse passages stay beat-spaced).
-    // _lx is the column's horizontal position in beat-units; anchT/anchLx map real time -> _lx so
+    // lx is the column's horizontal position in beat-units; anchT/anchLx map real time -> lx so
     // the playhead stays time-correct (scroll just speeds up through dense bars). game view is
     // unaffected (it uses time directly).
     const SLOT_EPS = 0.030, MIN_GAP = 0.30;
     const anchT = [], anchLx = [];
     let slotT = -1e9, slotLx = 0, prevB = 0, first = true;
-    for (let i = 0; i < vm.notes.length; i++) {     // notes are sorted by start time (song.py)
+    for (let i = 0; i < N; i++) {                   // notes are sorted by start time (song.py)
       const nt = vm.notes[i];
       if (nt.t - slotT > SLOT_EPS) {                // start a new column
         const b = beatPos(nt.t, beats);
@@ -111,15 +120,14 @@ const PiTV = (function () {
         prevB = b; slotT = nt.t;
         anchT.push(slotT); anchLx.push(slotLx);
       }
-      nt._lx = slotLx;
-      nt._top = false;
+      vmLay.lx[i] = slotLx;
       if (nt.d > maxDur) maxDur = nt.d;
       const k = nt.staff + '_' + Math.round(nt.t / 0.05);
       if (!(k in tops) || nt.idx > vm.notes[tops[k]].idx) tops[k] = i;
     }
-    for (const k in tops) vm.notes[tops[k]]._top = true;
-    vm._maxDur = maxDur;                 // longest note (sec) — windowing margin (R.1)
-    vm._anchT = anchT; vm._anchLx = anchLx;
+    for (const k in tops) vmLay.top[tops[k]] = true;
+    vmLay.maxDur = maxDur;                 // longest note (sec) — windowing margin (R.1)
+    vmLay.anchT = anchT; vmLay.anchLx = anchLx;
   }
   // R.1: notes are sorted by start time (song.py), and _b is monotonic in t, so we can
   // binary-search the first visible note instead of scanning all N every frame.
@@ -129,7 +137,7 @@ const PiTV = (function () {
     while (lo < hi) { const m = (lo + hi) >> 1; if (key(notes[m]) < target) lo = m + 1; else hi = m; }
     return lo;
   }
-  const keyT = nt => nt.t, keyLx = nt => nt._lx;
+  const keyT = nt => nt.t, ident = v => v;
   // piecewise-linear interpolation over sorted xs->ys, extrapolating at the end slopes.
   // Used both ways: time->layout-x (anchT,anchLx) and layout-x->time (anchLx,anchT).
   function interp(xs, ys, x) {
@@ -156,8 +164,8 @@ const PiTV = (function () {
   // selected as the part to view/play in a full-band song.
   function recomputeDrumMode() {
     const before = drumMode;
-    const selDrum = !!(playSet && playSet.size && song && song._hasDrums && [...playSet].every(c => c === 9));
-    drumMode = !!(song && (song._allDrum || selDrum));
+    const selDrum = !!(playSet && playSet.size && song && vmLay.hasDrums && [...playSet].every(c => c === 9));
+    drumMode = !!(song && (vmLay.allDrum || selDrum));
     if (drumMode !== before) { staticDirty = true; dirty = true; }
   }
   // Live keys the player presses -> drawn on the staff at the play line (PianoBooster behaviour).
@@ -257,7 +265,7 @@ const PiTV = (function () {
     // so go back by the longest note) .. last note that has appeared at the top.
     const notes = song.notes;
     const tHi = now + LOOKAHEAD + 0.05;
-    let i = lbound(notes, keyT, now - (song._maxDur || 0) - 0.05);
+    let i = lbound(notes, keyT, now - (vmLay.maxDur || 0) - 0.05);
     for (; i < notes.length; i++) {
       const nt = notes[i];
       if (nt.t > tHi) break;
@@ -466,7 +474,7 @@ const PiTV = (function () {
       const { step, s, scrollX, endX, playX, markTop, markBot, staves, barNumY } = g;
       // ---- scrolling region (engraving-spaced; clipped so it can't bleed into the header) ----
       const beats = song.beats, num = (song.timesig && song.timesig[0]) || 4;
-      const aT = song._anchT || [], aLx = song._anchLx || [];   // real time <-> layout-x anchors
+      const aT = vmLay.anchT || [], aLx = vmLay.anchLx || [];   // real time <-> layout-x anchors
       const BEATS_AHEAD = 8;
       const ppb = Math.max(24, (endX - playX) / BEATS_AHEAD);   // px per layout unit
       const nowLx = interp(aT, aLx, now);
@@ -510,15 +518,15 @@ const PiTV = (function () {
       ctx.strokeStyle = waiting ? C_WANT : C_NOW; ctx.lineWidth = 2;   // now line
       ctx.beginPath(); ctx.moveTo(playX, markTop); ctx.lineTo(playX, markBot); ctx.stroke();
 
-      // notes — windowed to the visible layout range via binary search (notes sorted by _lx)
-      const notes = song.notes;
-      let i = lbound(notes, keyLx, lxLo);
+      // notes — windowed to the visible layout range via binary search (vmLay.lx sorted ascending)
+      const notes = song.notes, lx = vmLay.lx;
+      let i = lbound(lx, ident, lxLo);
       for (; i < notes.length; i++) {
+        if (lx[i] > lxHi) break;
         const nt = notes[i];
-        if (nt._lx > lxHi) break;
         if (!this.visible(nt)) continue;
-        const x = bx(nt._lx); if (x < scrollX - step || x > endX) continue;
-        this.drawNote(nt, x, g);
+        const x = bx(lx[i]); if (x < scrollX - step || x > endX) continue;
+        this.drawNote(nt, x, g, i);
       }
       // live keys the player is pressing: short marks just LEFT of the play bar (PianoBooster behaviour)
       const ys = this.playedYs(g);
@@ -548,7 +556,7 @@ const PiTV = (function () {
       for (const n of playedSet) { const sp = staffPos(+n, split); ys.push(g.yOf(sp.staff, sp.idx)); }
       return ys;
     }
-    drawNote(nt, x, g) {
+    drawNote(nt, x, g, i) {
       const { step, s, trebleC, bassC, yOf } = g;
       const y = yOf(nt.staff, nt.idx);
       const mine = (nt.n >= rangeLo && nt.n <= rangeHi) && (!playHand || nt.hand === playHand);
@@ -572,12 +580,12 @@ const PiTV = (function () {
       if (solid) { ctx.fillStyle = col; fillGlyph(NOTEHEAD_PATH, x, y, s); }
       else { ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.4, 2 * s); strip(NOTEHEAD, x, y, s, true, false); }
       if (dotted) { const dy = (nt.idx % 2 === 0) ? y - step / 2 : y; ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x + 11 * s, dy, Math.max(1.3, 1.8 * s), 0, 6.2832); ctx.fill(); }
-      if (showNames && nt.n <= 90 && nt._top && step >= 7) {       // note-name chip, up-and-left of the head
+      if (showNames && nt.n <= 90 && vmLay.top[i] && step >= 7) {  // note-name chip, up-and-left of the head
         const fh = step * 1.5;
         ctx.font = '600 ' + fh.toFixed(0) + 'px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         const lx = x - 9 * s, ly = y - 2 * step - 2;
-        if (nt._nmW == null || nt._nmFh !== fh) { nt._nmW = ctx.measureText(nt.nm).width; nt._nmFh = fh; }
-        const tw = nt._nmW, pad = 3 * s;
+        if (vmLay.nmW[i] == null || vmLay.nmFh[i] !== fh) { vmLay.nmW[i] = ctx.measureText(nt.nm).width; vmLay.nmFh[i] = fh; }
+        const tw = vmLay.nmW[i], pad = 3 * s;
         ctx.fillStyle = 'rgba(13,17,23,0.85)'; rr(lx - tw / 2 - pad, ly - fh / 2 - 1, tw + 2 * pad, fh + 2, 3 * s); ctx.fill();
         ctx.fillStyle = C_NAME; ctx.fillText(nt.nm, lx, ly);
       }
@@ -640,7 +648,7 @@ const PiTV = (function () {
         ctx.beginPath(); ctx.moveTo(sx, fy); ctx.lineTo(sx + 8 * s, fy + (up ? 14 * s : -14 * s)); ctx.stroke();
       }
     }
-    drawNote(nt, x, g) {
+    drawNote(nt, x, g, i) {                            // i (note index) unused here; kept for the base-class call contract
       const { s, yOf } = g;
       const dm = DRUM_MAP[nt.n] || DRUM_FALLBACK, y = yOf(dm.pos);
       const col = (Math.abs(nt.t - now) < 0.06) ? C_WANT : C_NOTE;

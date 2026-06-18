@@ -145,6 +145,17 @@ def main():
         if not (sess and sess.startswith("vm,file,")):
             problems.append("PiSession not populated after pick: " + str(sess))
         print("session -> ", sess)
+        # render smoke: the vmLay fix changed setSong + the draw loop + drawNote. Enter the stage so
+        # rAF actually draws frames against the loaded song (exercises vmLay.lx/top + drawNote), then pause.
+        ev("document.getElementById('play').click()")
+        time.sleep(1.5)
+        clockt = ev("PiTV.clockState().t")
+        drew = ev("PiTV.clockState().t > -3.49")     # clock advanced from -LOOKAHEAD => frames ran
+        ev("var p=document.getElementById('play'); if(p && /Pause/.test(p.textContent)) p.click();")  # pause back
+        time.sleep(0.4)
+        if not drew:
+            problems.append("canvas frames did not advance after play (clock t=" + str(clockt) + ")")
+        print("render smoke -> clock t:", clockt, "| frames ran:", drew)
         # transport: entering Setup runs PiTransport.buildLoop -> #loopPanel should be populated
         loopui = ev("var lp=document.getElementById('loopPanel'); !!(lp && lp.querySelector('.hint'))")
         loopbtn = ev("!!document.querySelector('#loopPanel button')")   # bar table present -> Loop button built
