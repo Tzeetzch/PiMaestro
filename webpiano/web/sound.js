@@ -112,8 +112,61 @@ const PiSound = (function () {
     reset() { try { this.player.cancelQueue(audioCtx); } catch (e) {} this.env = {}; }
   }
 
-  const lightEngine = new LightEngine(), richEngine = new RichEngine();
-  function pickEngine() { return engineKind === 'light' ? lightEngine : richEngine; }
+  // Fluid — libfluidsynth compiled to WASM (js-synthesizer) + a real GM soundfont. Same engine
+  // Songsterr uses, so drums/instruments sound like a proper synth, not oscillators or one-shot samples.
+  // ch9 is the GM percussion channel automatically. Realtime synth -> we schedule notes with timers
+  // off the local clock (the shared scheduler hands us audio-time `at`).
+  const SF_URL = 'sf/gm.sf2';
+  class FluidEngine extends SoundEngine {
+    constructor() { super(); this.synth = null; this.node = null; this.sfid = -1; this.timers = new Set(); }
+    async ensure() {
+      if (!window.JSSynth) {
+        this.loading = this.loading || (async () => {
+          await loadScript('vendor/libfluidsynth-2.4.6.js');   // emscripten libfluidsynth (wasm embedded)
+          await loadScript('vendor/js-synthesizer.min.js');    // the JSSynth wrapper
+          await JSSynth.waitForReady();
+        })();
+        await this.loading;
+      }
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+      if (!this.synth) {
+        this.synth = new JSSynth.Synthesizer();
+        this.synth.init(audioCtx.sampleRate);
+        this.node = this.synth.createAudioNode(audioCtx, 8192);
+        this.node.connect(audioCtx.destination);
+      }
+      if (this.sfid < 0) {
+        const buf = await (await fetch(SF_URL)).arrayBuffer();
+        this.sfid = await this.synth.loadSFont(buf);
+      }
+      this.programs();
+    }
+    programs() {
+      const vm = ctx.getVM(); if (!this.synth || !vm) return;
+      (vm.parts || []).forEach(p => { if (p.ch !== 9) { try { this.synth.midiProgramChange(p.ch, p.program || 0); } catch (e) {} } });
+      try { this.synth.midiProgramChange(0, 0); } catch (e) {}   // live keys = grand piano on ch0 (ch9 stays GM drums)
+    }
+    now() { return audioCtx.currentTime; }
+    schedule(ch, n, v, at, dur) {                          // realtime synth: fire at the right wall-clock moment
+      const s = this.synth; if (!s) return;
+      const delay = Math.max(0, (at - audioCtx.currentTime) * 1000);
+      const on = setTimeout(() => { this.timers.delete(on); try { s.midiNoteOn(ch, n, v); } catch (e) {} }, delay);
+      const off = setTimeout(() => { this.timers.delete(off); try { s.midiNoteOff(ch, n); } catch (e) {} }, delay + Math.max(40, dur * 1000));
+      this.timers.add(on); this.timers.add(off);
+    }
+    live(note, on, vel) {
+      if (!this.synth) return;
+      try { on ? this.synth.midiNoteOn(0, note, vel || 96) : this.synth.midiNoteOff(0, note); } catch (e) {}
+    }
+    reset() {                                              // stop/seek: cancel pending hits + silence everything
+      this.timers.forEach(clearTimeout); this.timers.clear();
+      try { this.synth && this.synth.midiAllSoundsOff(); } catch (e) {}
+    }
+  }
+
+  const lightEngine = new LightEngine(), richEngine = new RichEngine(), fluidEngine = new FluidEngine();
+  function pickEngine() { return engineKind === 'light' ? lightEngine : engineKind === 'fluid' ? fluidEngine : richEngine; }
   async function ensureSound() { engine = pickEngine(); await engine.ensure(); }
   function firstNoteAtOrAfter(t) {
     const ns = (ctx.getVM() && ctx.getVM().notes) || []; let lo = 0, hi = ns.length;

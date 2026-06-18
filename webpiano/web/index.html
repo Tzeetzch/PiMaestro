@@ -405,8 +405,9 @@
           <h3>Sound</h3>
           <div class="field" id="sndRow" hidden><span class="lab">Play sound on this device</span><button id="sndHere" class="btn">&#128266; Off</button></div>
           <div class="field" id="sndQualRow" hidden><span class="lab">Sound quality</span>
-            <select id="sndQual" title="Rich = real sampled instruments; Light = simpler synth for slower devices">
-              <option value="rich">Rich &mdash; real instruments</option>
+            <select id="sndQual" title="FluidSynth = a real synth + soundfont (best, esp. drums); Rich = sampled instruments; Light = simplest">
+              <option value="fluid">FluidSynth &mdash; best (real synth + soundfont)</option>
+              <option value="rich">Rich &mdash; sampled instruments</option>
               <option value="light">Light &mdash; faster, simpler</option>
             </select>
           </div>
