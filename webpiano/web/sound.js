@@ -133,7 +133,7 @@ const PiSound = (function () {
       if (!this.synth) {
         this.synth = new JSSynth.Synthesizer();
         this.synth.init(audioCtx.sampleRate);
-        this.node = this.synth.createAudioNode(audioCtx, 8192);
+        this.node = this.synth.createAudioNode(audioCtx, 1024);   // small buffer (~21ms) — 8192 was ~170ms of lag
         this.node.connect(audioCtx.destination);
       }
       if (this.sfid < 0) {
