@@ -456,6 +456,7 @@
   // SSE protocol -> handler map (was a 7-way if/else on m.type)
   PiSse.start({
     pos: onPos, hello: onPos,
+    reload: () => location.reload(),                       // server pushed new app code -> refresh (e.g. the TV kiosk)
     key: m => { PiNav.setKbd(true); document.dispatchEvent(new KeyboardEvent('keydown', { key: m.key, bubbles: true, cancelable: true })); },
     gate: m => PiTV.clearGateUpto(m.gi),                   // freeze cursor cleared -> local clock resumes here
     rating: m => { flashRating(m.kind, m.off, m.note); if (m.gate != null) PiTV.setRated(m.gate, m.kind); },

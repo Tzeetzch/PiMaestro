@@ -261,6 +261,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _c_seek(self, req): conductor.seek(req.get("t")); self._json({"ok": True})
     def _c_part(self, req): conductor.set_part(req.get("ch"), req.get("mute"), req.get("program"), req.get("volume")); self._json({"ok": True})
     def _c_pi_mute(self, req): conductor.set_pi_muted(bool(req.get("on"))); self._json({"ok": True})
+    def _c_reload(self, req): broadcast({"type": "reload"}); self._json({"ok": True})   # tell every client to refresh (push new app code)
     def _c_key(self, req):
         k = req.get("key")                              # phone remote -> the TV app replays this keypress
         if k:
@@ -292,7 +293,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         "play_parts": _c_play_parts, "mode": _c_mode, "speed": _c_speed, "loop": _c_loop,
         "range": _c_range, "seek": _c_seek, "part": _c_part, "pi_mute": _c_pi_mute, "key": _c_key,
         "save_settings": _c_save_settings, "favorite": _c_favorite, "played": _c_played,
-        "poweroff": _c_poweroff, "reboot": _c_reboot, "exit": _c_exit,
+        "poweroff": _c_poweroff, "reboot": _c_reboot, "exit": _c_exit, "reload": _c_reload,
     }
 
     # --- API ---
