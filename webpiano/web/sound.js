@@ -200,7 +200,7 @@ const PiSound = (function () {
   const sndTops = Array.from(document.querySelectorAll('.sndtop'));
   function reflect() {
     sndHere.classList.toggle('on', soundOn);
-    sndHere.innerHTML = soundOn ? '&#128266; On' : '&#128266; Off';
+    sndHere.innerHTML = (soundOn ? SVG_ON : SVG_OFF) + (soundOn ? ' On' : ' Off');
     sndTops.forEach(b => { b.classList.toggle('on', soundOn); b.innerHTML = soundOn ? SVG_ON : SVG_OFF;
                            b.title = soundOn ? 'Sound on this device — on' : 'Play sound on this device'; });
   }
@@ -231,7 +231,7 @@ const PiSound = (function () {
   function setPiMute(on) {
     piMuted = on;
     piMute.classList.toggle('on', piMuted);
-    piMute.innerHTML = piMuted ? '&#128263; Pi muted' : '&#128264; Mute Pi';
+    piMute.textContent = piMuted ? 'Pi muted' : 'Mute Pi';
   }
   piMute.onclick = () => { setPiMute(!piMuted); ctx.control({ cmd: 'pi_mute', on: piMuted }).catch(() => {}); };
 

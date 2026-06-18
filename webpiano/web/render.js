@@ -22,14 +22,50 @@ const PiTV = (function () {
   })();
 
   /* ---- keyboard ---- */
-  let keys = {};
+  let keys = {}, kit = {}, bottomEl = null;
   let rangeLo = LOW, rangeHi = HIGH;          // which keys are on the player's real keyboard
-  function buildKeyboard(el) {
-    el.innerHTML = '';
-    keys = {};
+  // The bottom strip is a PIANO keyboard for pitched parts, or an abstract DRUM KIT for drum parts
+  // (a piano under a drum chart is meaningless). Both are cheap DOM/SVG with CSS class toggles — no
+  // per-frame canvas cost. The app calls buildKeyboard() once; we render whichever fits drumMode.
+  function buildKeyboard(el) { bottomEl = el; renderBottom(); }
+  function renderBottom() {
+    if (!bottomEl) return;
+    bottomEl.classList.toggle('drumkit', drumMode);
+    if (drumMode) buildDrumKit(bottomEl); else buildPianoKeys(bottomEl);
+  }
+  function buildPianoKeys(el) {
+    el.innerHTML = ''; keys = {};
     for (let n = LOW; n <= HIGH; n++) if (!isBlack(n)) keys[n] = mk(el, n, 'wk');
     for (let n = LOW; n <= HIGH; n++) if (isBlack(n)) keys[n] = mk(el, n, 'bk');
     applyRange();
+  }
+  // Abstract drum kit (drummer's-eye view): 7 pieces grouped from DRUM_MAP, lit green on a hit.
+  const KIT = [
+    { id: 'crash', label: 'CR', cx: 175, cy: 70,  sh: '<ellipse cx="175" cy="70" rx="60" ry="14" transform="rotate(-18 175 70)"/>' },
+    { id: 'hat',   label: 'HH', cx: 250, cy: 134, sh: '<ellipse cx="250" cy="120" rx="46" ry="10"/><ellipse cx="250" cy="142" rx="46" ry="9"/>' },
+    { id: 'tom1',  label: 'T1', cx: 455, cy: 78,  sh: '<circle cx="455" cy="78" r="34"/>' },
+    { id: 'tom2',  label: 'T2', cx: 590, cy: 84,  sh: '<circle cx="590" cy="84" r="40"/>' },
+    { id: 'ride',  label: 'RD', cx: 825, cy: 92,  sh: '<ellipse cx="825" cy="92" rx="66" ry="15" transform="rotate(16 825 92)"/>' },
+    { id: 'snare', label: 'S',  cx: 400, cy: 180, sh: '<circle cx="400" cy="180" r="48"/>' },
+    { id: 'kick',  label: 'K',  cx: 500, cy: 252, sh: '<ellipse cx="500" cy="252" rx="135" ry="34"/>' },
+  ];
+  const KIT_MAP = {};   // GM drum note -> kit piece id (collapses ~30 GM notes into 7 visual zones)
+  [[35,'kick'],[36,'kick'],[37,'snare'],[38,'snare'],[39,'snare'],[40,'snare'],
+   [42,'hat'],[44,'hat'],[46,'hat'],[48,'tom1'],[50,'tom1'],
+   [41,'tom2'],[43,'tom2'],[45,'tom2'],[47,'tom2'],
+   [49,'crash'],[52,'crash'],[55,'crash'],[57,'crash'],
+   [51,'ride'],[53,'ride'],[54,'ride'],[56,'ride'],[59,'ride'],[69,'ride'],[70,'ride'],[82,'ride']
+  ].forEach(p => { KIT_MAP[p[0]] = p[1]; });
+  function buildDrumKit(el) {
+    kit = {};
+    const g = KIT.map(p => '<g class="piece" data-id="' + p.id + '">' + p.sh
+      + '<text class="kit-lbl" x="' + p.cx + '" y="' + p.cy + '">' + p.label + '</text></g>').join('');
+    el.innerHTML = '<svg class="kit" viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid meet" aria-hidden="true">' + g + '</svg>';
+    for (const p of KIT) kit[p.id] = el.querySelector('[data-id="' + p.id + '"]');
+  }
+  function hitKit(n) {                                  // flash the struck piece green, fade after 240ms
+    const p = kit[KIT_MAP[n] || 'snare']; if (!p) return;
+    p.classList.add('hit'); clearTimeout(p._t); p._t = setTimeout(() => p.classList.remove('hit'), 240);
   }
   function mk(el, n, cls) {
     const d = document.createElement('div');
@@ -45,8 +81,11 @@ const PiTV = (function () {
     for (let n = LOW; n <= HIGH; n++) { const el = keys[n]; if (el) el.classList.toggle('oor', n < rangeLo || n > rangeHi); }
   }
   function setRange(lo, hi) { rangeLo = lo; rangeHi = hi; applyRange(); }
-  function highlight(n, on) { const el = keys[n]; if (el) el.classList.toggle('on', on); }
-  function flashWrong(n) { const el = keys[n]; if (!el) return; el.classList.add('wrong'); setTimeout(() => el.classList.remove('wrong'), 350); }
+  function highlight(n, on) { if (drumMode) return; const el = keys[n]; if (el) el.classList.toggle('on', on); }   // drums light via setPlayed -> hitKit
+  function flashWrong(n) {
+    if (drumMode) { const p = kit[KIT_MAP[n] || 'snare']; if (p) { p.classList.add('wrong'); setTimeout(() => p.classList.remove('wrong'), 350); } return; }
+    const el = keys[n]; if (!el) return; el.classList.add('wrong'); setTimeout(() => el.classList.remove('wrong'), 350);
+  }
 
   /* ---- shared playback state (set from the streamed position) ---- */
   let canvas, ctx, song = null, view = 'notation', drumMode = false;
@@ -69,12 +108,24 @@ const PiTV = (function () {
   function attachCanvas(c) {
     canvas = c; ctx = c.getContext('2d');
     resize(); addEventListener('resize', resize);
+    if (window.ResizeObserver) new ResizeObserver(() => resize()).observe(canvas);   // re-size on show/hide too, not just window resize
     requestAnimationFrame(frame);
+    window.PiRenderDbg = () => ({ drawCost: Math.round(drawCost * 100) / 100, resScale: Math.round(resScale * 1000) / 1000, dirty });   // lightweight perf probe
   }
-  // Dynamic resolution: backing store = CSS px (capped near 1080p) times resScale, which the frame
-  // loop nudges down/up to hold 60fps. CSS stretches the bitmap, so lower res = slightly softer, never
-  // slower. baseScale is the static CSS->backing cap; resScale (0.4..1) is the live quality knob.
-  let baseScale = 1, resScale = 1;
+  // RESOLUTION-INDEPENDENT rendering. All geometry/drawing happens in LOGICAL (CSS-pixel) coordinates
+  // that never change with quality. The backing store is logical * baseScale * resScale, and the 2D
+  // context is pre-scaled by (backing / logical) so a logical coordinate always lands on the same spot
+  // on screen. Lowering resScale therefore changes ONLY sharpness (fewer real pixels), never the size
+  // or position of anything — no zoom. resScale is the live 60fps quality knob (RES_MIN..1).
+  const RES_MIN = 0.5, RES_MAX = 0.72;   // start near 720p-equivalent (known-smooth on the Pi at 1080p out)
+  let baseScale = 1, resScale = RES_MAX, dbgNowLx = 0;
+  let logicalW = 1, logicalH = 1, scaleX = 1, scaleY = 1, staticW = -1, staticH = -1;
+  function computeScale() {
+    logicalW = canvas.clientWidth || canvas.width || 1;
+    logicalH = canvas.clientHeight || canvas.height || 1;
+    scaleX = canvas.width / logicalW;
+    scaleY = canvas.height / logicalH;
+  }
   function resize() {
     if (!canvas) return;
     const cw = canvas.clientWidth, ch = canvas.clientHeight;
@@ -85,10 +136,12 @@ const PiTV = (function () {
     const w = Math.max(1, Math.round(canvas.clientWidth * baseScale * resScale));
     const h = Math.max(1, Math.round(canvas.clientHeight * baseScale * resScale));
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; staticDirty = true; }
+    computeScale();
     dirty = true;
   }
   function setSong(vm) {
     song = vm; now = -LOOKAHEAD; setWanted([]); dirty = true; staticDirty = true;
+    resScale = RES_MAX; frameMs = 16.7; lastDrawTs = null; settle = 20; if (canvas) applyRes();   // fresh quality budget per song
     const N = (vm.notes && vm.notes.length) || 0;
     // Drum chart? render the percussion staff when the notes on screen are all GM channel-10 drums —
     // either a drum-only file, or the drum PART of a full song once it's the selected part (see setPlay).
@@ -166,10 +219,10 @@ const PiTV = (function () {
     const before = drumMode;
     const selDrum = !!(playSet && playSet.size && song && vmLay.hasDrums && [...playSet].every(c => c === 9));
     drumMode = !!(song && (vmLay.allDrum || selDrum));
-    if (drumMode !== before) { staticDirty = true; dirty = true; }
+    if (drumMode !== before) { staticDirty = true; dirty = true; renderBottom(); }   // swap the bottom strip: keyboard <-> drum kit
   }
   // Live keys the player presses -> drawn on the staff at the play line (PianoBooster behaviour).
-  function setPlayed(n, on) { if (on) playedSet.add(n); else playedSet.delete(n); dirty = true; }
+  function setPlayed(n, on) { if (drumMode && on) hitKit(n); if (on) playedSet.add(n); else playedSet.delete(n); dirty = true; }
 
   /* ---- R.4 local playback clock (always on; pos frames only correct it) ---- */
   let clockOn = false, clockPlaying = false, clockSpeed = 1, lastTs = null;
@@ -222,10 +275,11 @@ const PiTV = (function () {
   }
   function setLoop(a, b) { loopA = (a == null ? null : a); loopB = (b == null ? null : b); dirty = true; }
   function setNames(on) { showNames = !!on; dirty = true; }
-  function setWanted(list) {
-    for (const n in wantedSet) { if (keys[n]) keys[n].classList.remove('wait'); delete wantedSet[n]; }
+  function setWanted(list) {                            // amber "you owe this" cue — on the piano keys OR the drum kit
+    const wait = (n, on) => { if (keys[n]) keys[n].classList.toggle('wait', on); const kp = kit[KIT_MAP[n]]; if (kp) kp.classList.toggle('wait', on); };
+    for (const n in wantedSet) { wait(n, false); delete wantedSet[n]; }
     wanted = list;
-    for (let i = 0; i < list.length; i++) { wantedSet[list[i]] = 1; if (keys[list[i]]) keys[list[i]].classList.add('wait'); }
+    for (let i = 0; i < list.length; i++) { wantedSet[list[i]] = 1; wait(list[i], true); }
   }
 
   /* =================== GAME (falling notes) =================== */
@@ -428,10 +482,11 @@ const PiTV = (function () {
 
   // R.2: draw the unchanging layer (staff lines + clefs + time/key sig) into the offscreen
   // canvas once. Reuses the same strip/accidental code by pointing `ctx` at the offscreen.
-  function buildStaticLayer(W, H, g) {
+  function buildStaticLayer(W, H, g) {               // W,H logical; render at backing res in logical coords
     if (!staticCv) staticCv = document.createElement('canvas');
-    staticCv.width = W; staticCv.height = H;
+    staticCv.width = Math.max(1, Math.round(W * scaleX)); staticCv.height = Math.max(1, Math.round(H * scaleY));
     const save = ctx; ctx = staticCv.getContext('2d');
+    ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
     ctx.clearRect(0, 0, W, H);
     const { step, s, trebleC, bassC, x0, clefX, tsX, ksX, ksGap, key, nAcc, endX, yOf } = g;
     // staff lines (5 each, full width) + left joining line
@@ -469,10 +524,10 @@ const PiTV = (function () {
 
   class NotationView {
     // Per-variant overrides: geom(W,H) buildStatic(W,H,g) drawHead(nt,x,g,i)->stemSpec visible(nt) playedYs(g)
-    render(W, H) {
+    render(W, H) {                                    // W,H are LOGICAL dims (ctx is pre-scaled to backing)
       const g = this.geom(W, H);
-      if (staticDirty || !staticCv || staticCv.width !== W || staticCv.height !== H) this.buildStatic(W, H, g);
-      ctx.drawImage(staticCv, 0, 0);                  // blit the cached staff + header
+      if (staticDirty || !staticCv || staticW !== W || staticH !== H) { this.buildStatic(W, H, g); staticW = W; staticH = H; }
+      ctx.drawImage(staticCv, 0, 0, staticCv.width / scaleX, staticCv.height / scaleY);   // blit cached staff 1:1 (exact, no rounding drift)
       if (!song) return;
       const { step, s, scrollX, endX, playX, markTop, markBot, staves, barNumY } = g;
       // ---- scrolling region (engraving-spaced; clipped so it can't bleed into the header) ----
@@ -480,7 +535,7 @@ const PiTV = (function () {
       const aT = vmLay.anchT || [], aLx = vmLay.anchLx || [];   // real time <-> layout-x anchors
       const BEATS_AHEAD = 8;
       const ppb = Math.max(24, (endX - playX) / BEATS_AHEAD);   // px per layout unit
-      const nowLx = interp(aT, aLx, now);
+      const nowLx = interp(aT, aLx, now); dbgNowLx = nowLx;
       const bx = lx => playX + (lx - nowLx) * ppb;
       const behind = (playX - scrollX) / ppb + 1;
       // collect ~2 layout-units (≥ a beat) PAST each edge so a beam group is fully formed before it
@@ -561,6 +616,7 @@ const PiTV = (function () {
       const stems = new Map(), beamP = new Path2D(), beam2 = new Path2D(), accP = new Path2D();
       const sp = col => { let p = stems.get(col); if (!p) { p = new Path2D(); stems.set(col, p); } return p; };
       const seg = (p, x0, y0, x1, y1) => { p.moveTo(x0, y0); p.lineTo(x1, y1); };
+      const vseg = (p, x, y0, y1) => { p.moveTo(x, y0); p.lineTo(x, y1); };   // vertical stem — x can't be omitted
       const accent = (x, y) => { const w = 5 * s, h = 3.5 * s; accP.moveTo(x - w, y - h); accP.lineTo(x + w, y); accP.lineTo(x - w, y + h); };
       for (const up of [true, false]) {
         const sub = vis.filter(o => o.up === up);
@@ -582,13 +638,13 @@ const PiTV = (function () {
           if (cols[i].f > 0 && j > i) {                 // BEAM a run of >= 2 columns
             let beamY = up ? 1e9 : -1e9;                // flat beam at the extreme stem-end
             for (let k = i; k <= j; k++) { const e = up ? cols[k].lo - STEM : cols[k].hi + STEM; beamY = up ? Math.min(beamY, e) : Math.max(beamY, e); }
-            for (let k = i; k <= j; k++) { const c = cols[k], sx = c.x + (up ? NW : -NW); seg(sp(c.col), sx, top(c), beamY); if (c.w >= 100) accent(c.x, up ? beamY - 7 * s : c.lo - 13 * s); }
+            for (let k = i; k <= j; k++) { const c = cols[k], sx = c.x + (up ? NW : -NW); vseg(sp(c.col), sx, top(c), beamY); if (c.w >= 100) accent(c.x, up ? beamY - 7 * s : c.lo - 13 * s); }
             seg(beamP, cols[i].x + (up ? NW : -NW), beamY, cols[j].x + (up ? NW : -NW), beamY);
             const off = (up ? 1 : -1) * 5 * s;
             for (let k = i; k < j; k++) if (cols[k].f >= 2 && cols[k + 1].f >= 2) seg(beam2, cols[k].x + (up ? NW : -NW), beamY + off, cols[k + 1].x + (up ? NW : -NW), beamY + off);
           } else {                                      // plain stem (+ flag if a lone 8th/16th)
             const c = cols[i], sx = c.x + (up ? NW : -NW), end = up ? c.lo - STEM : c.hi + STEM;
-            seg(sp(c.col), sx, top(c), end);
+            vseg(sp(c.col), sx, top(c), end);
             for (let f = 0; f < c.f; f++) { const fy = end + (up ? 1 : -1) * f * 8 * s; seg(sp(c.col), sx, fy, sx + 8 * s, fy + (up ? 14 : -14) * s); }
             if (c.w >= 100) accent(c.x, up ? end - 7 * s : c.lo - 13 * s);
           }
@@ -661,10 +717,11 @@ const PiTV = (function () {
                markTop: yOf(8), markBot: yOf(-8),
                staves: [{ top: yOf(4), bot: yOf(-4) }], barNumY: yOf(4) - 1.6 * step };
     }
-    buildStatic(W, H, g) {
+    buildStatic(W, H, g) {                             // W,H logical; render at backing res in logical coords
       if (!staticCv) staticCv = document.createElement('canvas');
-      staticCv.width = W; staticCv.height = H;
+      staticCv.width = Math.max(1, Math.round(W * scaleX)); staticCv.height = Math.max(1, Math.round(H * scaleY));
       const save = ctx; ctx = staticCv.getContext('2d');
+      ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
       ctx.clearRect(0, 0, W, H);
       const { step, s, x0, clefX, tsX, endX, yOf } = g, top = yOf(4), bot = yOf(-4);
       ctx.strokeStyle = C_STAVE; ctx.lineWidth = Math.max(1, s);
@@ -710,17 +767,21 @@ const PiTV = (function () {
 
   /* ---- frame ---- */
   function draw() {
-    const W = canvas.width, H = canvas.height;
-    ctx.clearRect(0, 0, W, H);
-    if (view === 'notation') (drumMode ? drumView : pianoView).render(W, H);
-    else drawGame(W, H);
+    if (!canvas.clientWidth || !canvas.clientHeight) return;   // hidden / not laid out — skip (don't waste a frame)
+    computeScale();
+    if (logicalW < 2 || logicalH < 2) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);                       // clear in device pixels
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);             // then draw everything in LOGICAL coordinates
+    if (view === 'notation') (drumMode ? drumView : pianoView).render(logicalW, logicalH);
+    else drawGame(logicalW, logicalH);
   }
   // Hold 60fps the way game engines do: draw EVERY frame (never skip — motion stays smooth), but
   // adapt the render RESOLUTION to the budget. We track a smoothed draw cost; if it creeps toward the
   // ~16.6ms 60fps budget we shrink resScale (fewer pixels next frame), and when there's slack we grow
   // it back toward full. A 9–15ms dead-zone keeps it from oscillating. The clock advances every rAF,
   // so timing is exact regardless of resolution.
-  let drawCost = 4;
+  let drawCost = 4, frameMs = 16.7, lastDrawTs = null, settle = 0;
   function frame(ts) {
     requestAnimationFrame(frame);
     if (clockOn && clockPlaying) {                 // R.4: advance the local clock, freezing at gates
@@ -733,14 +794,21 @@ const PiTV = (function () {
     } else lastTs = null;
     if (clockOn) refreshWantedLocal();
     if (ctx && dirty) {
-      // re-scale BEFORE drawing (from the last frame's cost) so this frame is painted at the new res
-      let want = resScale;
-      if (drawCost > 15 && resScale > 0.4) want = resScale * 0.9;        // over budget -> fewer pixels
-      else if (drawCost < 9 && resScale < 1) want = Math.min(1, resScale * 1.06);  // slack -> sharpen back
-      if (Math.abs(want - resScale) > 0.02) { resScale = want; applyRes(); }
+      // Dynamic quality: hold 60fps by watching the REAL frame cadence (gap between painted frames),
+      // NOT the ~1ms draw-call time (which never sees the async GPU). When we miss the ~16.7ms vsync
+      // (the compositor throttles us to ~33ms once the GPU can't keep up), step resScale DOWN a notch.
+      // Down-only within a song (no up-hunting => no shimmer); setSong resets to RES_MAX. Because the
+      // renderer is resolution-independent, a step changes sharpness only — never size (no zoom).
+      if (lastDrawTs != null) { const dt = ts - lastDrawTs; if (dt > 0 && dt < 200) frameMs += (dt - frameMs) * 0.15; }
+      lastDrawTs = ts;
+      if (settle > 0) settle--;
+      else if (frameMs > 22 && resScale > RES_MIN) {
+        resScale = Math.max(RES_MIN, Math.round((resScale - 0.1) * 100) / 100);
+        applyRes(); frameMs = 16.7; settle = 15;                        // ignore the rescale frame itself
+      }
       const t0 = performance.now();
       draw(); dirty = false;
-      drawCost += ((performance.now() - t0) - drawCost) * 0.1;          // smoothed cost of a draw
+      drawCost += ((performance.now() - t0) - drawCost) * 0.1;          // perf probe only
     }
   }
 

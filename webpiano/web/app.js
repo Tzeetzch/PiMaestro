@@ -329,7 +329,7 @@
     const t = timingTally;
     if (!t || !t.on) { scoreEl.textContent = 'Timing: —'; scoreEl.className = 'badge'; return; }
     if (!(t.good + t.late + t.early + t.miss + (t.wrong || 0))) { scoreEl.textContent = 'Timing: ready'; scoreEl.className = 'badge'; return; }
-    scoreEl.textContent = '🎯 ' + t.good + ' good · ' + t.late + ' late · ' + t.early + ' early'
+    scoreEl.textContent = t.good + ' good · ' + t.late + ' late · ' + t.early + ' early'
       + (t.miss ? ' · ' + t.miss + ' miss' : '') + (t.wrong ? ' · ' + t.wrong + ' wrong' : '');
     scoreEl.className = 'badge';
   }

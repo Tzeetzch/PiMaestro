@@ -7,12 +7,13 @@
 const PiNav = (function () {
   const $ = id => document.getElementById(id);
   const backBtn = $('quitStage'), playBtn = $('play'), resetBtn = $('reset'), viewBtn = $('view'), seekEl = $('seek'),
+        menuBack = $('menuBack'), soundTop = $('soundTop'), menuSettings = $('menuSettings'),   // topbar (shared across menu screens)
         groupTabs = $('groupTabs'), songList = $('songList'), uploadBtn = $('uploadBtn'), startBtn = $('startBtn'),
-        finish = $('finish'), finAgain = $('finAgain'), finPick = $('finPick'),
+        finish = $('finish'), finAgain = $('finAgain'), finPick = $('finPick'), homeStart = $('homeStart'),
         pauseEl = $('pause'), pMode = $('pMode'), pSpeed = $('pSpeed'), pHand = $('pHand'),
         pResume = $('pResume'), pRestart = $('pRestart'), pMore = $('pMore'), pQuit = $('pQuit');
 
-  let kbd = false;                                        // true once the user drives by keys -> show focus ring
+  let kbd = true;                                         // TV-first: show the focus ring from the start (a pointerdown turns it off)
   let ctx = {
     screens: {}, parent: {},
     getView: () => 'home', getPlaying: () => false, getVM: () => null, getLastT: () => 0,
@@ -26,22 +27,28 @@ const PiNav = (function () {
     if (!finish.hidden) return [[finAgain, finPick].filter(vis)];
     if (view === 'stage') return [[backBtn, playBtn, resetBtn, viewBtn, seekEl].filter(vis)];
     const sc = $(ctx.screens[view]);
+    const top = [menuBack, soundTop, menuSettings].filter(vis);   // topbar — reachable by D-pad on every menu screen
+    let cols;
     if (view === 'library') {                             // category rail | the song GRID (modeled as real columns)
       const tabs = Array.from(groupTabs.querySelectorAll('.gcat, .gtab')).filter(vis);
       const items = Array.from(songList.querySelectorAll('.songitem')).filter(vis);
-      if (!items.length) return [tabs, [songList.querySelector('.hint.empty'), uploadBtn].filter(vis)];
-      const rows = []; let top = null, row = null;        // group tiles into visual rows by their top edge...
-      for (const it of items) {
-        if (top === null || Math.abs(it.offsetTop - top) > 4) { row = []; rows.push(row); top = it.offsetTop; }
-        row.push(it);
+      if (!items.length) { cols = [tabs, [songList.querySelector('.hint.empty'), uploadBtn].filter(vis)]; }
+      else {
+        const rows = []; let rtop = null, row = null;     // group tiles into visual rows by their top edge...
+        for (const it of items) {
+          if (rtop === null || Math.abs(it.offsetTop - rtop) > 4) { row = []; rows.push(row); rtop = it.offsetTop; }
+          row.push(it);
+        }
+        const ncol = Math.max.apply(null, rows.map(r => r.length));   // ...then transpose to columns for D-pad L/R/U/D
+        cols = [tabs];
+        for (let c = 0; c < ncol; c++) cols.push(rows.map(r => r[c]).filter(Boolean));
+        cols[cols.length - 1] = cols[cols.length - 1].concat([uploadBtn].filter(vis));
       }
-      const ncol = Math.max.apply(null, rows.map(r => r.length));   // ...then transpose to columns for D-pad L/R/U/D
-      const cols = [tabs];
-      for (let c = 0; c < ncol; c++) cols.push(rows.map(r => r[c]).filter(Boolean));
-      cols[cols.length - 1] = cols[cols.length - 1].concat([uploadBtn].filter(vis));
-      return cols;
+    } else {
+      cols = [Array.from(sc.querySelectorAll('button, select, summary, input[type=checkbox], input[type=range], .songitem')).filter(vis)];
     }
-    return [Array.from(sc.querySelectorAll('button, select, summary, input[type=checkbox], input[type=range], .songitem')).filter(vis)];
+    if (top.length) cols[0] = top.concat(cols[0] || []);   // prepend topbar to the first column: Up from the content reaches Back/Sound/Settings
+    return cols;
   }
   function focusAt(el) {
     if (!el) return;
@@ -51,6 +58,7 @@ const PiNav = (function () {
   }
   function focusFirst() {
     const view = ctx.getView();
+    if (view === 'home' && vis(homeStart)) return focusAt(homeStart);         // primary action ("Start playing") first
     if (view === 'setup' && vis(startBtn)) return focusAt(startBtn);          // primary action ("Play now") first
     if (view === 'library') { const sel = songList.querySelector('.songitem.on'); if (vis(sel)) return focusAt(sel); }
     const c = navCols(); for (const col of c) { if (col.length) { focusAt(col[0]); return; } }   // first NON-EMPTY column (an empty rail must not strand focus before Upload)

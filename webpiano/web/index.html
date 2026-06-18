@@ -24,12 +24,13 @@
     --r1:12px; --r2:16px; --r3:24px; --pill:999px;
     --sp1:6px; --sp2:12px; --sp3:18px; --sp4:32px; --sp5:56px;
     --shadow:0 12px 40px rgba(0,0,0,.5);
-    --ring:0 0 0 3px var(--bg), 0 0 0 6px var(--accent);   /* loud enough to read across a room */
+    --ring:0 0 0 3px var(--accent), 0 0 0 6px rgba(0,0,0,.5);   /* accent ring + dark halo: reads on ANY surface, across a room */
     --ease:.18s cubic-bezier(.4,0,.2,1);
     color-scheme:dark; font-size:18px;
   }
   @media (min-width:1280px){ :root{ font-size:20px; } }   /* TVs are ≥1080p — scale the whole UI up */
   *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  [hidden]{ display:none !important; }   /* .btn/.field set display:, which silently overrode the UA [hidden] rule (Back showed on Home) */
   html,body{ height:100%; }
   body{
     margin:0; color:var(--txt); overflow:hidden; user-select:none;
@@ -61,7 +62,7 @@
     border:1px solid var(--line2); border-radius:var(--r1); padding:13px 16px; min-height:52px; cursor:pointer; }
   select:hover{ border-color:#3c4c61; }
   :focus-visible{ outline:none; box-shadow:var(--ring); }
-  .nav-here{ box-shadow:var(--ring) !important; transform:scale(1.015); }    /* focused tile gains mass, like Apple TV */
+  .nav-here{ box-shadow:var(--ring) !important; transform:scale(1.04); z-index:5; position:relative; }   /* focused element clearly lifts above the rest, readable across a room */
   .dim{ color:var(--dim); }
 
   /* ============================ play stage ============================ */
@@ -71,12 +72,12 @@
   header{ flex:0 0 auto; display:flex; align-items:center; gap:14px; padding:12px 20px;
     background:#0d1320; border-bottom:1px solid var(--line); z-index:3; }   /* solid: no blur (Pi GPU) */
   .brand{ font-size:17px; font-weight:800; letter-spacing:.2px; white-space:nowrap; display:flex; align-items:center; gap:8px; }
-  .brand .logo{ font-size:19px; }
-  #song{ font-size:14px; color:var(--txt2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .brand .logo{ font-size:19px; color:var(--accent); display:inline-flex; align-items:center; }
+  #song{ font-size:18px; color:var(--txt2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
   header .grow{ margin-left:auto; }
   .dot{ width:9px; height:9px; border-radius:50%; background:var(--warn); flex:0 0 auto; box-shadow:0 0 8px currentColor; }
   .dot.ok{ background:var(--good); } .dot.err{ background:var(--bad); }
-  .badge{ font-size:13px; font-weight:600; padding:7px 12px; border-radius:var(--pill); background:var(--surface2);
+  .badge{ font-size:16px; font-weight:600; padding:7px 13px; border-radius:var(--pill); background:var(--surface2);
     border:1px solid var(--line2); color:var(--txt2); white-space:nowrap; }
   .badge.good{ background:rgba(55,210,126,.15); border-color:var(--good); color:#9fe9c0; }
   .badge.low{ background:rgba(245,185,66,.14); border-color:var(--warn); color:#f3d49a; }
@@ -115,6 +116,23 @@
   .bk.on{ background:#3f86f0; } .bk.wait{ background:#e0a52f; }
   .wk.wrong{ background:#ff5a6a; } .bk.wrong{ background:#e0414f; }   /* wrong note flash (red) */
 
+  /* abstract drum KIT (drummer's-eye view) — replaces the piano keyboard on drum parts. Static SVG,
+     CSS class toggles only; the glow lives on at most a couple of lit pieces, so the Pi GPU is fine. */
+  #piano.drumkit{ background:#070a0e; }
+  .kit{ width:100%; height:100%; display:block; }
+  .kit .piece ellipse, .kit .piece circle{ fill:#1a2230; stroke:#2c3a4e; stroke-width:3;
+    transition:fill .2s ease, stroke .2s ease, filter .2s ease; }
+  .kit .kit-lbl{ fill:#5c6b80; font:700 30px system-ui,sans-serif; text-anchor:middle; dominant-baseline:central;
+    pointer-events:none; transition:fill .2s ease; }
+  .kit .piece.wait ellipse, .kit .piece.wait circle{ fill:#3a2f12; stroke:#f5b942;
+    filter:drop-shadow(0 0 8px rgba(245,185,66,.55)); }   /* "you owe this hit" at a gate (amber, like the piano .wait key) */
+  .kit .piece.wait .kit-lbl{ fill:#f5d493; }
+  .kit .piece.hit ellipse, .kit .piece.hit circle{ fill:#37d27e; stroke:#7ef0b0;
+    filter:drop-shadow(0 0 10px rgba(55,210,126,.8)); transition:none; }   /* instant light, then fades on class removal */
+  .kit .piece.hit .kit-lbl{ fill:#06210f; }
+  .kit .piece.wrong ellipse, .kit .piece.wrong circle{ fill:#ff5a6a; stroke:#ff9aa6;
+    filter:drop-shadow(0 0 10px rgba(255,90,106,.8)); transition:none; }
+
   /* ============================ menu / screens ============================ */
   #menu[hidden]{ display:none; }
   #menu{ position:fixed; inset:0; z-index:10; background:
@@ -131,7 +149,7 @@
   /* HOME (root) */
   .home-screen{ align-items:center; justify-content:center; }
   .home-inner{ display:flex; flex-direction:column; align-items:center; gap:14px; text-align:center; }
-  .home-logo{ font-size:84px; line-height:1; }
+  .home-logo{ font-size:84px; line-height:1; color:var(--accent); }
   .home-title{ margin:0; font-size:clamp(40px,7vh,64px); font-weight:800; letter-spacing:.5px; }
   .home-tagline{ margin:0 0 24px; color:var(--txt2); font-size:19px; }
   .home-actions{ display:flex; flex-direction:column; gap:16px; width:min(440px,80vw); }
@@ -270,7 +288,7 @@
   <!-- ===================== play stage (only while playing / paused) ===================== -->
   <div id="stage" hidden>
     <header>
-      <span class="brand"><span class="logo">&#127929;</span> PiMaestro</span>
+      <span class="brand"><span class="logo"><svg viewBox="0 0 24 24" width="1em" height="1em" aria-hidden="true" style="display:inline-block;vertical-align:-.15em" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55a4 4 0 1 0 4 4V7h4V3z"/></svg></span> PiMaestro</span>
       <span id="song" class="dim"></span>
       <span class="grow"></span>
       <span id="time" class="badge">0:00 / 0:00</span>
@@ -296,7 +314,7 @@
   <aside id="menu" hidden>
     <div class="topbar">
       <button id="menuBack" class="btn ghost" title="Back" hidden>&#8592; Back</button>
-      <span class="brand"><span class="logo">&#127929;</span> PiMaestro</span>
+      <span class="brand"><span class="logo"><svg viewBox="0 0 24 24" width="1em" height="1em" aria-hidden="true" style="display:inline-block;vertical-align:-.15em" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55a4 4 0 1 0 4 4V7h4V3z"/></svg></span> PiMaestro</span>
       <span id="menuTitle"></span>
       <span class="grow"></span>
       <button id="soundTop" class="btn icon ghost sndtop" title="Play sound on this device"></button>
@@ -306,7 +324,7 @@
     <!-- HOME (root) -->
     <section id="screenHome" class="screen home-screen">
       <div class="home-inner">
-        <div class="home-logo">&#127929;</div>
+        <div class="home-logo"><svg viewBox="0 0 24 24" width="1em" height="1em" aria-hidden="true" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55a4 4 0 1 0 4 4V7h4V3z"/></svg></div>
         <h1 class="home-title">PiMaestro</h1>
         <p class="home-tagline">Learn piano on the big screen.</p>
         <div class="home-actions">
@@ -403,7 +421,7 @@
         </div>
         <div class="card">
           <h3>Sound</h3>
-          <div class="field" id="sndRow" hidden><span class="lab">Play sound on this device</span><button id="sndHere" class="btn">&#128266; Off</button></div>
+          <div class="field" id="sndRow" hidden><span class="lab">Play sound on this device</span><button id="sndHere" class="btn">Off</button></div>
           <div class="field" id="sndQualRow" hidden><span class="lab">Sound quality</span>
             <select id="sndQual" title="FluidSynth = a real synth + soundfont (best, esp. drums); Rich = sampled instruments; Light = simplest">
               <option value="fluid">FluidSynth &mdash; best (real synth + soundfont)</option>
@@ -411,7 +429,7 @@
               <option value="light">Light &mdash; faster, simpler</option>
             </select>
           </div>
-          <div class="field" id="muteRow" hidden><span class="lab">Mute the Pi's speaker</span><button id="piMute" class="btn">&#128264; Mute Pi</button></div>
+          <div class="field" id="muteRow" hidden><span class="lab">Mute the Pi's speaker</span><button id="piMute" class="btn">Mute Pi</button></div>
           <p class="hint">Sound comes from the Pi itself (HDMI / headphone jack). On a device that can't hear the Pi, turn on "Play sound on this device" (and mute the Pi to avoid hearing both).</p>
         </div>
       </div></div>
@@ -440,7 +458,7 @@
 
   <div id="finish" class="overlay" hidden role="dialog" aria-modal="true" aria-label="Song complete">
     <div class="ov-card">
-      <div class="ov-title">&#127881; You played it!</div>
+      <div class="ov-title">You played it!</div>
       <div id="finStars" class="stars"></div>
       <div id="finSub" class="ov-sub"></div>
       <div class="ov-btns">
