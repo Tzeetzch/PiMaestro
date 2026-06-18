@@ -120,6 +120,16 @@ def main():
             problems.append("song grid empty (selector did not render from catalogue)")
         print("catalogue -> songs:", nsongs, "| grid items:", ngrid)
 
+        # corner local-sound button: present, SVG painted by PiSound, click doesn't throw.
+        # (Not asserting it turns ON — headless audio has no trusted user gesture.)
+        sndbtn = ev("var b=document.getElementById('soundTop'); b ? (/svg/i.test(b.innerHTML) ? 'has-svg' : 'no-svg') : 'missing'")
+        sndclick = ev("try{document.getElementById('soundTop').click(); 'ok'}catch(e){'THROW: '+e}")
+        if sndbtn != "has-svg":
+            problems.append("corner sound button: " + str(sndbtn))
+        if sndclick != "ok":
+            problems.append("sound button click threw: " + str(sndclick))
+        print("sound button ->", sndbtn, "| click:", sndclick)
+
         # drive the library + d-pad: go to library, press Down, confirm focus moved and kbd-mode on
         ev("document.getElementById('homeStart').click()")
         time.sleep(0.4)

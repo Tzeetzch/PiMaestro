@@ -12,6 +12,9 @@ const PiSound = (function () {
   const $ = id => document.getElementById(id);
   const sndHere = $('sndHere'), piMute = $('piMute'), sndRow = $('sndRow'), muteRow = $('muteRow'),
         sndQual = $('sndQual'), sndQualRow = $('sndQualRow');
+  // Speaker icons as inline SVG (the Pi's Chromium has no emoji font) for the corner quick-toggle.
+  const SVG_ON = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor" stroke="none"/><path d="M16 8.5a4 4 0 0 1 0 7"/><path d="M18.7 6a7 7 0 0 1 0 12"/></svg>';
+  const SVG_OFF = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor" stroke="none"/><line x1="16" y1="9.5" x2="21" y2="14.5"/><line x1="21" y1="9.5" x2="16" y2="14.5"/></svg>';
   let soundOn = false, schedTimer = null, schedPtr = 0, piMuted = false, lastT = 0, audioCtx = null;
   let engineKind = localStorage.getItem('pitv.sndEngine') || 'rich';
   let engine = null;
@@ -139,18 +142,32 @@ const PiSound = (function () {
   function stopTimer() { if (schedTimer) { clearInterval(schedTimer); schedTimer = null; } }
 
   sndRow.hidden = false; muteRow.hidden = false; if (sndQualRow) sndQualRow.hidden = false;
-  sndHere.onclick = async () => {
-    if (!soundOn) {
-      sndHere.innerHTML = '&#8987; …';
-      try { await ensureSound(); } catch (e) { sndHere.innerHTML = 'sound load failed'; return; }
-      soundOn = true; sndHere.classList.add('on'); sndHere.innerHTML = '&#128266; On';
+  // Local sound has two entry points now: the Settings toggle (sndHere) and the corner button(s)
+  // (.sndtop). Both drive ONE state through setSound(); reflect() keeps every control in sync.
+  const sndTops = Array.from(document.querySelectorAll('.sndtop'));
+  function reflect() {
+    sndHere.classList.toggle('on', soundOn);
+    sndHere.innerHTML = soundOn ? '&#128266; On' : '&#128266; Off';
+    sndTops.forEach(b => { b.classList.toggle('on', soundOn); b.innerHTML = soundOn ? SVG_ON : SVG_OFF;
+                           b.title = soundOn ? 'Sound on this device — on' : 'Play sound on this device'; });
+  }
+  async function setSound(on) {
+    if (on === soundOn) return;
+    if (on) {                                          // load the engine + open audio (needs a user gesture)
+      sndHere.innerHTML = '&#8987; …'; sndTops.forEach(b => b.textContent = '…');
+      try { await ensureSound(); }
+      catch (e) { sndHere.innerHTML = 'sound load failed'; sndTops.forEach(b => b.innerHTML = SVG_OFF); return; }
+      soundOn = true;
       schedPtr = firstNoteAtOrAfter(ctx.getClock().t);
       if (ctx.getClock().playing) startTimer();        // idle? don't burn CPU — armed on next Play
     } else {
-      soundOn = false; sndHere.classList.remove('on'); sndHere.innerHTML = '&#128266; Off';
-      stopTimer(); if (engine) engine.reset();
+      soundOn = false; stopTimer(); if (engine) engine.reset();
     }
-  };
+    reflect();
+  }
+  sndHere.onclick = () => setSound(!soundOn);
+  sndTops.forEach(b => { b.onclick = () => setSound(!soundOn); });
+  reflect();                                           // paint the corner button(s) at startup
   if (sndQual) {
     sndQual.value = engineKind;
     sndQual.onchange = async () => {                    // hot-swap engine; keep playing if sound is on
