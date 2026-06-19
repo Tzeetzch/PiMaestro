@@ -143,13 +143,13 @@
 
   // Set which part the player covers (channels + optional hand); the rest becomes background.
   // (The Part dropdown -> channels/hand logic + the Setup screen live in setup.js / PiSetup.)
-  function setPlayChannels(ch, hand) {
-    PiSession.play = ch.slice(); PiSession.hand = hand || null;
-    PiTV.setPlay(ch, PiSession.hand);            // show only your chosen part (Listen plays the rest for sound)
-    control({ cmd: 'play_parts', channels: ch, hand: PiSession.hand }).catch(() => {});
+  function setPlayChannels(ch, hand, track) {
+    PiSession.play = ch.slice(); PiSession.hand = hand || null; PiSession.trk = (track == null ? null : track);
+    PiTV.setPlay(ch, PiSession.hand, PiSession.trk);   // show only your chosen part / drum track
+    control({ cmd: 'play_parts', channels: ch, hand: PiSession.hand, track: PiSession.trk }).catch(() => {});
   }
   function applyParts() {
-    setPlayChannels(PiSetup.partChannels(), PiSetup.partHand());
+    setPlayChannels(PiSetup.partChannels(), PiSetup.partHand(), PiSetup.partTrack());
     if (view === 'setup') PiSetup.buildInstr();           // keep the Setup Play boxes in sync
     saveCurrent();
   }
@@ -179,7 +179,7 @@
     if (m.mode) { modeSel.value = m.mode; mode = m.mode; }
     PiTV.setFreezeMode(mode === 'follow');
     if (m.hand === 'R' || m.hand === 'L') PiSetup.setHand(m.hand);
-    if (Array.isArray(m.play)) { PiSession.play = m.play.slice(); PiSession.hand = m.hand || null; PiTV.setPlay(PiSession.play, PiSession.hand); }
+    if (Array.isArray(m.play)) { PiSession.play = m.play.slice(); PiSession.hand = m.hand || null; PiSession.trk = (m.trk == null ? null : m.trk); PiTV.setPlay(PiSession.play, PiSession.hand, PiSession.trk); }
     if (typeof m.pi_muted === 'boolean') PiSound.setPiMute(m.pi_muted);   // reflect the engine's real mute state
     PiSetup.updateModeHint(mode);
   }
@@ -207,7 +207,7 @@
       PiSession.file = file;
       PiSession.vm = vm;
       PiTV.setSong(vm);
-      if (keep) { setPlayChannels(PiSession.play, PiSession.hand); }
+      if (keep) { setPlayChannels(PiSession.play, PiSession.hand, PiSession.trk); }
       else { PiSetup.buildPartOptions(vm); applyParts(); }
       showTranspose(vm.transpose || 0);
       PiTransport.clearLoop();                   // bar counts differ between songs
@@ -248,8 +248,8 @@
     release();
     if (!ok) return;
     if (has && s.hand) PiSetup.setHand(s.hand);         // best-effort dropdown label
-    if (has && s.play) setPlayChannels(s.play, PiSetup.partHand());   // authoritative part selection
-    PiTV.setPlay(PiSession.play, PiSession.hand);
+    if (has && s.play) setPlayChannels(s.play, PiSetup.partHand(), PiSetup.partTrack());   // authoritative part selection
+    PiTV.setPlay(PiSession.play, PiSession.hand, PiSession.trk);
     control({ cmd: 'speed', mult: +speedSel.value }).catch(() => {});   // sync engine
     control({ cmd: 'mode', mode: mode }).catch(() => {});
     PiLib.select(file);                                 // re-highlight the picked song in the rail
@@ -312,6 +312,31 @@
   function applyNames() { PiTV.setNames(names); namesBtn.textContent = 'Names: ' + (names ? 'on' : 'off'); namesBtn.classList.toggle('on', names); }
   applyNames();
   namesBtn.onclick = () => { names = !names; localStorage.setItem('pitv.names', names ? 'on' : 'off'); applyNames(); };
+
+  // Notation size preference (Settings -> Display): scales the staff/notes to taste.
+  const noteSizeSel = $('noteSize');
+  if (noteSizeSel) {
+    const savedNS = localStorage.getItem('pimaestro.noteSize');
+    if (savedNS && [...noteSizeSel.options].some(o => o.value === savedNS)) noteSizeSel.value = savedNS;
+    PiTV.setNoteScale(parseFloat(noteSizeSel.value));
+    noteSizeSel.onchange = () => PiTV.setNoteScale(parseFloat(noteSizeSel.value));   // setNoteScale persists to localStorage
+  }
+
+  // System (tucked at the bottom of Settings): Quit closes the kiosk -> Pi desktop; Power off shuts
+  // the Pi down. Two-click confirm so a stray kit/remote press (or a fat finger) can't fire it.
+  (() => {
+    const arm = (btn, label, cmd) => {
+      if (!btn) return;
+      let armed = false, tmr = 0;
+      btn.onclick = () => {
+        if (!armed) { armed = true; btn.textContent = label + ' — confirm?'; btn.classList.add('on');
+          tmr = setTimeout(() => { armed = false; btn.textContent = label; btn.classList.remove('on'); }, 4000); return; }
+        clearTimeout(tmr); btn.textContent = '…'; control({ cmd }).catch(() => {});
+      };
+    };
+    arm($('sysQuit'), 'Quit', 'exit');
+    arm($('sysPower'), 'Power off', 'poweroff');
+  })();
 
   /* ---- browser sound lives in sound.js now (PiSound: SoundEngine base + Light/Rich subclasses,
      scheduler, and the sound/mute UI). It reads the song + "which notes are mine" through the context
@@ -453,6 +478,14 @@
       if (!endedShown) { endedShown = true; celebrate(); }
     }
   }
+  // The drum kit doubles as a REMOTE when no song is playing (never during a game — then the pads are
+  // for drumming): T1=Up, T2=Down, snare=OK, kick=Back. Head+rim notes both count. Maps to a synthetic
+  // D-pad key so it reuses ALL of PiNav's keyboard handling (focus move / Enter-click / Back). See the
+  // `!playing` guard in noteon below — that's what keeps kit hits from steering menus mid-song.
+  const KIT_KEY = { 48: 'ArrowUp', 50: 'ArrowUp', 45: 'ArrowDown', 47: 'ArrowDown',
+                    43: 'ArrowLeft', 58: 'ArrowLeft', 41: 'ArrowRight', 39: 'ArrowRight',
+                    38: 'Enter', 40: 'Enter', 36: 'Escape', 35: 'Escape' };   // T1↑ T2↓ T3← T4→ snare=OK kick=Back
+  let lastKitNav = 0;   // debounce: a hard hit can double-strike (or send head+rim) -> don't jump the menu twice
   // SSE protocol -> handler map (was a 7-way if/else on m.type)
   PiSse.start({
     pos: onPos, hello: onPos,
@@ -461,7 +494,16 @@
     gate: m => PiTV.clearGateUpto(m.gi),                   // freeze cursor cleared -> local clock resumes here
     rating: m => { flashRating(m.kind, m.off, m.note); if (m.gate != null) PiTV.setRated(m.gate, m.kind); },
     gates: m => PiTV.setGates(m.gates),                    // gate set changed (load / part / range / mode)
-    noteon: m => { PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true); PiSound.live(m.note, true, m.velocity); },
+    noteon: m => {
+      PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true); PiSound.live(m.note, true, m.velocity);
+      if (!playing && KIT_KEY[m.note]) {                  // kit as a remote — ONLY when not in a game
+        const t = performance.now();
+        if (t - lastKitNav < 130) return;                 // debounce double-strikes so nav doesn't jump twice
+        lastKitNav = t;
+        PiNav.setKbd(true);
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: KIT_KEY[m.note], bubbles: true, cancelable: true }));
+      }
+    },
     noteoff: m => { PiTV.highlight(m.note, false); PiTV.setPlayed(m.note, false); PiSound.live(m.note, false); },
   });
 

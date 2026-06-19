@@ -18,6 +18,7 @@ import guitarpro
 
 from .notation import note_pos, note_type, note_name
 from .song import MIDDLE_C, MAX_NOTES, _group_chords
+from .scorekeeper import DRUM_ZONE
 
 PPQN = 960   # synthetic ticks-per-quarter, only so we can reuse notation.note_type for the symbol
 
@@ -122,6 +123,23 @@ def build_view_model(path, transpose=0, kbd_lo=None, kbd_hi=None, split=MIDDLE_C
         seen[ch]["count"] += 1
     parts.sort(key=lambda p: p["ch"])
 
+    # ---- drum tracks: all percussion shares ch9, so a multi-drummer file (e.g. two drummers) would
+    # otherwise merge into one impossible super-kit. List each track so the player can pick WHICH one;
+    # busiest first = the default. Notes keep their `trk`, so the conductor/renderer filter by it. ----
+    dcount, dname, dgrp = {}, {}, {}
+    for n in notes:
+        if n["ch"] == 9:
+            ti = n["trk"]
+            dcount[ti] = dcount.get(ti, 0) + 1
+            dname.setdefault(ti, ((tracks[ti].name or "").strip() if ti < len(tracks) else ""))
+            dgrp.setdefault(ti, {}).setdefault(n["t"], set()).add(DRUM_ZONE.get(n["n"]))
+    def _imposs(ti):  # beats needing >2 hands at once (a percussion overlay stacked on a kit) — unplayable
+        return sum(1 for zs in dgrp[ti].values() if sum(z not in ("kick", "hatpedal") for z in zs) > 2)
+    # most PLAYABLE first (fewest impossible chords), busiest as tiebreak -> the default is the real
+    # single drum kit, not a percussion-heavy / doubled layer (e.g. a tambourine track marked percussion).
+    drum_tracks = sorted(({"trk": ti, "name": dname[ti], "count": dcount[ti]} for ti in dcount),
+                         key=lambda d: (_imposs(d["trk"]), -d["count"]))
+
     # ---- bar + beat grid lines (seconds) ----
     bars = [round(starts[mi], 3) for mi in range(nmeas)]
     if duration:
@@ -143,6 +161,7 @@ def build_view_model(path, transpose=0, kbd_lo=None, kbd_hi=None, split=MIDDLE_C
         "timesig": list(tsigs[0]) if tsigs else [4, 4],
         "programs": programs,
         "parts": parts,
+        "drumTracks": drum_tracks,
         "rightChan": None,
         "leftChan": None,
         "bars": bars,

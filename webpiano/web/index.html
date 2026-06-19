@@ -94,7 +94,11 @@
   #time{ font-variant-numeric:tabular-nums; }
   #score{ min-width:140px; text-align:center; font-variant-numeric:tabular-nums; }
 
-  #fall{ flex:1 1 0; min-height:0; width:100%; display:block; }
+  /* two stacked layers: #fallbg holds the STATIC staff (drawn once, GPU-composited — never redrawn
+     per frame), #fall is the transparent foreground that redraws only the moving notes/lines/playhead.
+     This is what keeps the scroll smooth: no full-canvas staff blit every frame. */
+  #fallwrap{ flex:1 1 0; min-height:0; position:relative; }
+  #fallbg, #fall{ position:absolute; inset:0; width:100%; height:100%; display:block; }
 
   #transport{ flex:0 0 auto; display:flex; align-items:center; gap:12px; padding:var(--sp2) var(--sp4);
     background:#0d1320; border-top:1px solid var(--line); }
@@ -120,17 +124,18 @@
      CSS class toggles only; the glow lives on at most a couple of lit pieces, so the Pi GPU is fine. */
   #piano.drumkit{ background:#070a0e; }
   .kit{ width:100%; height:100%; display:block; }
-  .kit .piece ellipse, .kit .piece circle{ fill:#1a2230; stroke:#2c3a4e; stroke-width:3;
+  .kit .piece ellipse, .kit .piece circle, .kit .piece polygon{ fill:#1a2230; stroke:#2c3a4e; stroke-width:3;
     transition:fill .2s ease, stroke .2s ease, filter .2s ease; }
+  .kit .piece.pedal polygon{ fill:#141b26; stroke:#33415a; stroke-width:3; }   /* foot pedals read darker/flatter than the round pads */
   .kit .kit-lbl{ fill:#5c6b80; font:700 30px system-ui,sans-serif; text-anchor:middle; dominant-baseline:central;
     pointer-events:none; transition:fill .2s ease; }
-  .kit .piece.wait ellipse, .kit .piece.wait circle{ fill:#3a2f12; stroke:#f5b942;
+  .kit .piece.wait ellipse, .kit .piece.wait circle, .kit .piece.wait polygon{ fill:#3a2f12; stroke:#f5b942;
     filter:drop-shadow(0 0 8px rgba(245,185,66,.55)); }   /* "you owe this hit" at a gate (amber, like the piano .wait key) */
   .kit .piece.wait .kit-lbl{ fill:#f5d493; }
-  .kit .piece.hit ellipse, .kit .piece.hit circle{ fill:#37d27e; stroke:#7ef0b0;
+  .kit .piece.hit ellipse, .kit .piece.hit circle, .kit .piece.hit polygon{ fill:#37d27e; stroke:#7ef0b0;
     filter:drop-shadow(0 0 10px rgba(55,210,126,.8)); transition:none; }   /* instant light, then fades on class removal */
   .kit .piece.hit .kit-lbl{ fill:#06210f; }
-  .kit .piece.wrong ellipse, .kit .piece.wrong circle{ fill:#ff5a6a; stroke:#ff9aa6;
+  .kit .piece.wrong ellipse, .kit .piece.wrong circle, .kit .piece.wrong polygon{ fill:#ff5a6a; stroke:#ff9aa6;
     filter:drop-shadow(0 0 10px rgba(255,90,106,.8)); transition:none; }
 
   /* ============================ menu / screens ============================ */
@@ -297,7 +302,7 @@
     </header>
 
     <div id="seek" tabindex="0" role="slider" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" title="Click or arrow-keys to jump"><div id="seekfill"></div></div>
-    <canvas id="fall"></canvas>
+    <div id="fallwrap"><canvas id="fallbg"></canvas><canvas id="fall"></canvas></div>
 
     <div id="transport">
       <button id="quitStage" class="btn icon" title="Back to the song menu">&#8592;</button>
@@ -412,6 +417,14 @@
         <div class="card">
           <h3>Display</h3>
           <div class="field"><span class="lab">Note-name labels</span><button id="names" class="btn">Names: on</button></div>
+          <div class="field"><span class="lab">Notation size</span>
+            <select id="noteSize" title="Bigger or smaller notes &amp; staff — pick what reads best at your distance">
+              <option value="0.75">Small</option>
+              <option value="0.9">Medium</option>
+              <option value="1.05">Large</option>
+              <option value="1.2">Extra large</option>
+            </select>
+          </div>
           <div class="field"><span class="lab">Keyboard size</span>
             <select id="kbdSel" title="Match your keyboard; other keys are dimmed">
               <option value="88">88 keys</option><option value="76">76 keys</option><option value="61">61 keys</option>
@@ -431,6 +444,12 @@
           </div>
           <div class="field" id="muteRow" hidden><span class="lab">Mute the Pi's speaker</span><button id="piMute" class="btn">Mute Pi</button></div>
           <p class="hint">Sound comes from the Pi itself (HDMI / headphone jack). On a device that can't hear the Pi, turn on "Play sound on this device" (and mute the Pi to avoid hearing both).</p>
+        </div>
+        <div class="card">
+          <h3>System</h3>
+          <div class="field"><span class="lab">Close the app</span><button id="sysQuit" class="btn">Quit</button></div>
+          <div class="field"><span class="lab">Shut down the Pi</span><button id="sysPower" class="btn">Power off</button></div>
+          <p class="hint">Quit drops to the Pi desktop (relaunch from the desktop shortcut). Each needs a second click to confirm.</p>
         </div>
       </div></div>
     </section>

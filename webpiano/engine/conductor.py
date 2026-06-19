@@ -20,11 +20,13 @@ import socket
 import threading
 import time
 
-from .scorekeeper import ScoreKeeper, EARLY_WINDOW   # the timing judge + the shared "near the line" window
+from .scorekeeper import ScoreKeeper, EARLY_WINDOW, DRUM_ZONE   # timing judge + shared "near the line" window + GM-note→kit-zone map
 
 LOOKAHEAD = 3.5          # seconds of lead-in (notes fall from the top before t=0)
 TICK = 0.025             # ~40 Hz play-clock tick (pos frames are throttled to ~4 Hz in server.py)
 AT_LINE_EPS = 0.0010     # tolerance for "note has reached the hit line"
+DRUM_CHORD_WINDOW = 0.25 # drums only: pieces of one beat must be struck within this (real seconds) of
+                         # each other, so you can't store one drum, wait, then hit the rest to clear it
 AUTO_VEL = 90            # velocity for auto-played (accompaniment) notes (lacking their own velocity)
 AUTO_GAIN = 0.6          # scale accompaniment velocity DOWN so the backing sits under the player's keys
 MASTER_GAIN = 0.7        # FluidSynth master gain when not Pi-muted (set on load so it never jumps)
@@ -145,12 +147,14 @@ class Conductor:
         self._duration = 0.0
         self._play = set()               # MIDI channels the player covers (their part)
         self._hand = None                # 'R'/'L' to split a single channel by pitch, else None
+        self._trk = None                 # which DRUM track (when a file has >1 on ch9), else None = all
         self._mode = "follow"            # follow (waits) / along (continuous) / listen (plays all)
         self._lo, self._hi = 21, 108     # player's keyboard range; notes outside auto-play
 
         self._gates = []                 # ordered [(t, frozenset(pitches))] for the active hand
         self._gate_idx = 0
         self._satisfied = {}          # wanted pitches played for the current gate
+        self._rhythm = False          # drum part: gate by RHYTHM (any tap in time), not exact pitch
 
         self._t = -LOOKAHEAD
         self._speed = 1.0                # playback speed multiplier (practise slow, ramp up)
@@ -183,11 +187,13 @@ class Conductor:
             self._file = file
             self._notes = vm.get("notes", [])
             self._duration = vm.get("duration", 0.0)
+            self._trk = None                                   # drum-track pick is re-chosen per song
             if play is not None:
                 self._play = set(int(c) for c in play)
             else:                                              # default: both detected hands
                 self._play = set(c for c in (vm.get("rightChan"), vm.get("leftChan")) if c is not None)
             self._muted = set()
+            self._ensure_drum_trk()
             self._rebuild_gates()
             vm["gates"] = [round(t, 3) for t, _ in self._gates]   # ship gates IN the load response (no SSE race)
             self._reset_position()
@@ -202,12 +208,15 @@ class Conductor:
             self._rebuild_auto()
         self._emit(seeked=True)        # other clients see the file change + a forced (un-throttled) frame
 
-    def set_play(self, channels, hand=None):
-        """Choose which part(s) the player covers — a set of MIDI channels, optionally
-        narrowed to one hand ('R'/'L') by pitch, for single-channel (one-track) songs."""
+    def set_play(self, channels, hand=None, track=None):
+        """Choose which part(s) the player covers — a set of MIDI channels, optionally narrowed to
+        one hand ('R'/'L') by pitch (single-channel songs), or to one DRUM track `track` (a file with
+        more than one percussion track on ch9, e.g. two drummers — pick which one you play)."""
         with self._lock:
             self._play = set(int(c) for c in (channels or []))
             self._hand = hand if hand in ("R", "L") else None
+            self._trk = int(track) if track is not None else None
+            self._ensure_drum_trk()
             self._rebuild_gates()
             self._seek_to(self._t)       # keep position, recompute current gate
             self._rebuild_auto()         # the rest becomes backing
@@ -347,7 +356,18 @@ class Conductor:
             if self._gate_idx < len(self._gates):
                 gate_t, wanted = self._gates[self._gate_idx]
                 near = self._t >= gate_t - EARLY_WINDOW
-                if near and pitch in wanted:
+                if self._rhythm:
+                    # DRUMS: match at kit-ZONE granularity — a hit latches the due pieces in the SAME
+                    # zone (any hi-hat/crash articulation counts), so the gate clears only when the
+                    # player hits the pieces the kit is showing, not on any random hit. No wrong-note
+                    # flagging (a stray pad just doesn't advance; it still sounds via live MIDI).
+                    if near:
+                        z = DRUM_ZONE.get(pitch)
+                        if z is not None:
+                            for p in wanted:
+                                if DRUM_ZONE.get(p) == z:
+                                    self._satisfied[p] = now
+                elif near and pitch in wanted:
                     self._satisfied[pitch] = now            # timestamp -> chord-together check
                 elif (near and self._mode == "follow" and self._lo <= pitch <= self._hi
                       and not self._sounds_near(pitch)):
@@ -356,14 +376,42 @@ class Conductor:
                     self._score.wrong_note(pitch)
 
     # ---- internals (call with lock held unless noted) ----
+    def _ensure_drum_trk(self):
+        """Drums: if no track is explicitly chosen but the song has >1 percussion track (e.g. two
+        drummers), default to the FIRST one (vm.drumTracks is ordered most-playable first) instead
+        of MERGING every percussion track into one channel-9 stream — that merge stacks two players'
+        hits into chords no one can hit, and the gate then waits on notes the chosen view never shows."""
+        if self._trk is None and self._drum_part():
+            dts = (self._vm or {}).get("drumTracks") or []
+            if len(dts) > 1:
+                self._trk = dts[0].get("trk")
+
+    def _drum_part(self):
+        """The player's covered part is percussion (GM channel 9). Drum gating matches at kit-ZONE
+        granularity (see on_note / DRUM_ZONE) rather than exact pitch, so any articulation of the
+        right pad counts and the gate agrees with what the kit lights. play is {9} exactly when the
+        user picked 'Drums' in Setup (partChannels -> [9]); piano parts never include channel 9."""
+        return bool(self._play) and all(int(c) == 9 for c in self._play)
+
     def _rebuild_gates(self):
+        # Drum part: gate every drum beat, ignoring keyboard range — drum "pitches" are GM piece
+        # numbers, not keys. The stored pitch set is the pieces DUE at that beat: it lights the
+        # abstract kit's amber "you owe this" cue, and the gate clears once the player has hit every
+        # due ZONE (on_note). Piano mode (else): the player's in-range notes for the active hand.
+        self._rhythm = self._drum_part()
         groups: dict[float, set] = {}
         for n in self._notes:
             ch = int(n.get("ch", 0))
-            if ch == 9 or not (self._lo <= n["n"] <= self._hi):   # drums / off your keyboard
-                continue
-            if ch in self._play and (self._hand is None or n.get("hand") == self._hand):
-                groups.setdefault(round(n["t"], 3), set()).add(n["n"])
+            if self._rhythm:
+                if ch != 9:
+                    continue                                      # only the drum part gates
+                if self._trk is not None and int(n.get("trk", -1)) != self._trk:
+                    continue                                      # a different drummer's track — not the one you picked
+            elif ch == 9 or not (self._lo <= n["n"] <= self._hi):
+                continue                                          # drums / off your keyboard
+            elif not (ch in self._play and (self._hand is None or n.get("hand") == self._hand)):
+                continue                                          # not your part / hand
+            groups.setdefault(round(n["t"], 3), set()).add(n["n"])
         self._gates = [(t, frozenset(ps)) for t, ps in sorted(groups.items()) if ps]
 
     def _sounds_near(self, pitch):
@@ -395,6 +443,8 @@ class Conductor:
             ch = int(n.get("ch", 0))
             if ch in self._muted:
                 continue                                   # muted in the Instruments panel
+            if self._trk is not None and ch == 9 and int(n.get("trk", -1)) != self._trk:
+                continue                                   # you picked one drummer — the OTHER drum track is silent
             reachable = ch != 9 and self._lo <= n["n"] <= self._hi   # on your keyboard?
             mine = (reachable and self._mode != "listen" and ch in self._play
                     and (self._hand is None or n.get("hand") == self._hand))
@@ -420,7 +470,7 @@ class Conductor:
         limit = self._t
         if self._mode == "follow" and self._gate_idx < len(self._gates):
             gate_t, wanted = self._gates[self._gate_idx]
-            if not wanted.issubset(self._fresh()):
+            if not self._gate_met(wanted, self._fresh()):
                 limit = min(limit, gate_t - HOLD_EPS)
         while self._auto_i < len(self._auto) and self._auto[self._auto_i][0] <= limit:
             _, end, ch, pitch, vel = self._auto[self._auto_i]
@@ -446,9 +496,28 @@ class Conductor:
         # (song) early takes 0.60s (real) to reach the line, and a beginner may spread a chord
         # over seconds; neither should evaporate the press. EARLY_WINDOW (song-time, in on_note)
         # still stops a way-too-early press from counting; _satisfied is cleared on gate advance
-        # (and on seek/reset), so a press can never leak to the next gate. Chord-togetherness is
-        # intentionally NOT separately scored (Follow stays forgiving); add it in ScoreKeeper.finalize if wanted.
+        # (and on seek/reset), so a press can never leak to the next gate.
+        # DRUMS are the exception: a beat's pieces must be struck TOGETHER, so we drop latched hits
+        # older than DRUM_CHORD_WINDOW (real seconds) than the most recent one. This stops "store one
+        # drum, wait, hit the other" from clearing a multi-piece beat — the window slides to the latest
+        # hit, so any piece struck too long before the others expires and must be re-hit. Piano keeps
+        # the forgiving latch-forever (a beginner may spread a chord over seconds).
+        if self._rhythm and self._satisfied:
+            latest = max(self._satisfied.values())
+            return {p for p, t in self._satisfied.items() if latest - t <= DRUM_CHORD_WINDOW}
         return set(self._satisfied)
+
+    def _gate_met(self, wanted, fresh):
+        """Is this gate satisfied? Piano: every wanted note pressed. DRUMS: a player has 2 hands +
+        2 feet, so require all FOOT pieces (kick / hi-hat pedal) plus at least min(2, #hand-pieces)
+        of the HAND pieces. A chart that stacks 3+ cymbals/drums on one beat (messy live MIDI — e.g.
+        hi-hat + ride + snare together) would otherwise be PHYSICALLY IMPOSSIBLE to clear; this caps
+        the hand requirement at what two hands can actually strike together."""
+        if not self._rhythm:
+            return wanted.issubset(fresh)
+        feet = {p for p in wanted if DRUM_ZONE.get(p) in ("kick", "hatpedal")}
+        hands = wanted - feet
+        return feet.issubset(fresh) and len(hands & fresh) >= min(2, len(hands))
 
     def _waiting(self):
         if self._mode != "follow":       # play-along / listen never stop
@@ -456,7 +525,7 @@ class Conductor:
         if self._gate_idx >= len(self._gates):
             return False
         gate_t, wanted = self._gates[self._gate_idx]
-        return self._t >= gate_t - AT_LINE_EPS and not wanted.issubset(self._fresh())
+        return self._t >= gate_t - AT_LINE_EPS and not self._gate_met(wanted, self._fresh())
 
     def _advance_gates(self):
         """Step past gates we've reached; clamp+wait at the first unsatisfied one."""
@@ -464,7 +533,7 @@ class Conductor:
             gate_t, wanted = self._gates[self._gate_idx]
             if self._t < gate_t - AT_LINE_EPS:
                 break                                  # haven't reached this gate yet
-            if wanted.issubset(self._fresh()):
+            if self._gate_met(wanted, self._fresh()):
                 # This gate is satisfied — tell the local-clock client to unfreeze HERE, tagged
                 # with the freeze cursor (not the scoring cursor), so the two can't diverge (R.4).
                 self._on_state({"type": "gate", "gi": self._gate_idx})
@@ -517,6 +586,7 @@ class Conductor:
             frame["file"] = self._file
             frame["play"] = sorted(self._play)       # authoritative part/hand/mode/speed so a
             frame["hand"] = self._hand               # reconnecting or 2nd client matches the engine
+            frame["trk"] = self._trk                 # which drum track is selected (multi-drummer files)
             frame["mode"] = self._mode               # instead of resetting to defaults
             frame["speed"] = self._speed
             frame["pi_muted"] = self._pi_muted       # so a reconnect/2nd client shows the real mute state
@@ -550,7 +620,7 @@ class Conductor:
                     if self._mode == "follow":
                         self._advance_gates()        # only Follow-You freezes at gates
                     if self._mode != "listen":
-                        self._score.finalize(self._t, self._gates, now)   # rate each chord early/good/late as it passes
+                        self._score.finalize(self._t, self._gates, now, self._rhythm)   # rate each chord early/good/late as it passes
                     self._service_auto()             # play the accompaniment up to here
                     if self._t >= self._duration + 1.0:
                         self._playing = False

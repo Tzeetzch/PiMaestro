@@ -5,6 +5,7 @@
    from PianoBooster's StavePosition.cpp). It never recomputes timing or musical layout. */
 const PiTV = (function () {
   const LOW = 21, HIGH = 108, LOOKAHEAD = 3.5;
+  const MIN_GAP = 0.30;   // engraving: minimum column advance in layout-units (shared by setSong layout + render's px-gap floor)
   const isBlack = n => [1, 3, 6, 8, 10].indexOf(((n % 12) + 12) % 12) !== -1;
 
   const layout = {};
@@ -40,25 +41,32 @@ const PiTV = (function () {
     applyRange();
   }
   // Abstract drum kit (drummer's-eye view): 7 pieces grouped from DRUM_MAP, lit green on a hit.
-  const KIT = [
-    { id: 'crash', label: 'CR', cx: 175, cy: 70,  sh: '<ellipse cx="175" cy="70" rx="60" ry="14" transform="rotate(-18 175 70)"/>' },
-    { id: 'hat',   label: 'HH', cx: 250, cy: 134, sh: '<ellipse cx="250" cy="120" rx="46" ry="10"/><ellipse cx="250" cy="142" rx="46" ry="9"/>' },
-    { id: 'tom1',  label: 'T1', cx: 455, cy: 78,  sh: '<circle cx="455" cy="78" r="34"/>' },
-    { id: 'tom2',  label: 'T2', cx: 590, cy: 84,  sh: '<circle cx="590" cy="84" r="40"/>' },
-    { id: 'ride',  label: 'RD', cx: 825, cy: 92,  sh: '<ellipse cx="825" cy="92" rx="66" ry="15" transform="rotate(16 825 92)"/>' },
-    { id: 'snare', label: 'S',  cx: 400, cy: 180, sh: '<circle cx="400" cy="180" r="48"/>' },
-    { id: 'kick',  label: 'K',  cx: 500, cy: 252, sh: '<ellipse cx="500" cy="252" rx="135" ry="34"/>' },
+  const KIT = [   // drummer's-eye layout matching a full Alesis kit: 2 crashes, hi-hat (+foot pedal), 4 toms, ride
+    { id: 'hat',     label: 'HH',  cx: 235, cy: 116, sh: '<ellipse cx="235" cy="104" rx="44" ry="9"/><ellipse cx="235" cy="124" rx="44" ry="8"/>' },
+    { id: 'crash1',  label: 'CR',  cx: 360, cy: 56,  sh: '<ellipse cx="360" cy="56" rx="56" ry="13" transform="rotate(-18 360 56)"/>' },
+    { id: 'crash2',  label: 'CR2', cx: 648, cy: 50,  sh: '<ellipse cx="648" cy="50" rx="52" ry="12" transform="rotate(14 648 50)"/>' },
+    { id: 'ride',    label: 'RD',  cx: 872, cy: 92,  sh: '<ellipse cx="872" cy="92" rx="62" ry="15" transform="rotate(16 872 92)"/>' },
+    { id: 'tom1',    label: 'T1',  cx: 478, cy: 104, sh: '<circle cx="478" cy="104" r="31"/>' },
+    { id: 'tom2',    label: 'T2',  cx: 568, cy: 100, sh: '<circle cx="568" cy="100" r="35"/>' },
+    { id: 'tom3',    label: 'T3',  cx: 666, cy: 108, sh: '<circle cx="666" cy="108" r="37"/>' },
+    { id: 'tom4',    label: 'T4',  cx: 818, cy: 184, sh: '<circle cx="818" cy="184" r="46"/>' },   // floor tom (drummer's right, lower)
+    { id: 'snare',   label: 'S',   cx: 360, cy: 192, sh: '<circle cx="360" cy="192" r="43"/>' },
+    { id: 'kick',    label: 'K',   cx: 525, cy: 256, pedal: true, sh: '<polygon points="472,240 578,240 596,274 454,274"/>' },         // bass-drum FOOT pedal (footboard, not a drum)
+    { id: 'hatpedal',label: 'HHf', cx: 235, cy: 256, pedal: true, sh: '<polygon points="213,242 257,242 267,270 203,270"/>' },         // hi-hat FOOT pedal — directly UNDER the hi-hat cymbal
   ];
-  const KIT_MAP = {};   // GM drum note -> kit piece id (collapses ~30 GM notes into 7 visual zones)
-  [[35,'kick'],[36,'kick'],[37,'snare'],[38,'snare'],[39,'snare'],[40,'snare'],
-   [42,'hat'],[44,'hat'],[46,'hat'],[48,'tom1'],[50,'tom1'],
-   [41,'tom2'],[43,'tom2'],[45,'tom2'],[47,'tom2'],
-   [49,'crash'],[52,'crash'],[55,'crash'],[57,'crash'],
+  const KIT_MAP = {};   // GM/Alesis drum note -> kit piece id. MUST stay in sync with DRUM_ZONE in engine/scorekeeper.py
+  [[35,'kick'],[36,'kick'],
+   [37,'snare'],[38,'snare'],[39,'snare'],[40,'snare'],
+   [42,'hat'],[46,'hat'],[23,'hat'],                          // hi-hat STICK: closed / open / half-open
+   [44,'hatpedal'],[21,'hatpedal'],                           // hi-hat FOOT: pedal / splash
+   [48,'tom1'],[50,'tom1'],[45,'tom2'],[47,'tom2'],
+   [43,'tom3'],[58,'tom3'],[41,'tom4'],                       // Alesis: 43=Tom3, 41=Tom4 (two separate toms)
+   [49,'crash1'],[52,'crash1'],[55,'crash1'],[57,'crash2'],   // Alesis: 49=Crash1, 57=Crash2
    [51,'ride'],[53,'ride'],[54,'ride'],[56,'ride'],[59,'ride'],[69,'ride'],[70,'ride'],[82,'ride']
   ].forEach(p => { KIT_MAP[p[0]] = p[1]; });
   function buildDrumKit(el) {
     kit = {};
-    const g = KIT.map(p => '<g class="piece" data-id="' + p.id + '">' + p.sh
+    const g = KIT.map(p => '<g class="piece' + (p.pedal ? ' pedal' : '') + '" data-id="' + p.id + '">' + p.sh
       + '<text class="kit-lbl" x="' + p.cx + '" y="' + p.cy + '">' + p.label + '</text></g>').join('');
     el.innerHTML = '<svg class="kit" viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid meet" aria-hidden="true">' + g + '</svg>';
     for (const p of KIT) kit[p.id] = el.querySelector('[data-id="' + p.id + '"]');
@@ -98,22 +106,34 @@ const PiTV = (function () {
   let now = -LOOKAHEAD, waiting = false, wanted = [], dirty = true, playSet = null;
   let loopA = null, loopB = null;            // loop region (seconds), or null
   let playHand = null;                       // 'R'/'L' to emphasise one hand of a 1-channel part
+  let playTrk = null;                        // which DRUM track to show (multi-drummer files); null = all
   let showNames = true;                      // draw the note-name chips in notation
   const wantedSet = {};
   const playedSet = new Set();               // MIDI notes the player is pressing right now (shown on the staff)
   // R.2: the notation staff + header (clefs/time-sig/key-sig) never change while scrolling,
   // so render them once to an offscreen canvas and blit it each frame.
   let staticCv = null, staticDirty = true;
+  let bgCanvas = null, bgCtx = null;     // the STATIC background layer (staff/clefs) — drawn once, never per frame
 
   function attachCanvas(c) {
     canvas = c; ctx = c.getContext('2d');
+    bgCanvas = document.getElementById('fallbg');
+    if (bgCanvas) bgCtx = bgCanvas.getContext('2d');
     resize(); addEventListener('resize', resize);
     requestAnimationFrame(frame);
-    window.PiRenderDbg = () => ({ drawMs: Math.round(drawMs * 100) / 100, backing: canvas.width + 'x' + canvas.height, now });   // draw-cost probe
+    window.PiRenderDbg = () => ({ drawMs: Math.round(drawMs * 100) / 100, backing: canvas.width + 'x' + canvas.height, resScale, now });   // draw-cost probe
   }
-  // Backing store = CSS px (capped near 1080p) times resScale; rendering is in backing pixels directly
-  // (resScale stays 1 = native — a sub-native render that the browser upscales judders the scroll).
-  let baseScale = 1, resScale = 1;
+  // Backing store = CSS px (capped near 1080p) times resScale. The CANVAS (scrolling notation) renders
+  // into this backing store and CSS upscales it to its layout box, so resScale changes SHARPNESS only,
+  // never the on-screen size/zoom (all geometry derives from canvas.width/height — see draw()). The DOM
+  // (text, buttons, keyboard/kit) is unaffected and stays crisp at native. Lowering resScale cuts the
+  // per-frame GPU fill-rate so the Pi can hold a high refresh (100 Hz at 1080p) where full-res can't.
+  // Live-tunable: PiResScale(f) from the console, persisted in localStorage so it survives reload.
+  let baseScale = 1, resScale = (function () { const v = parseFloat(localStorage.getItem('pimaestro.resScale')); return (v > 0 && v <= 1) ? v : 0.67; })();
+  window.PiResScale = function (f) { if (f > 0 && f <= 1) { resScale = f; try { localStorage.setItem('pimaestro.resScale', f); } catch (e) {} applyRes(); } return resScale; };
+  // notation size: a user preference (Settings) that scales the staff/notes. Multiplies the size cap,
+  // so it shrinks/grows everything proportionally and is independent of render resolution (resScale).
+  let noteScale = (function () { const v = parseFloat(localStorage.getItem('pimaestro.noteSize')); return (v >= 0.6 && v <= 1.5) ? v : 0.9; })();
   function resize() {
     if (!canvas) return;
     const cw = canvas.clientWidth, ch = canvas.clientHeight;
@@ -124,6 +144,7 @@ const PiTV = (function () {
     const w = Math.max(1, Math.round(canvas.clientWidth * baseScale * resScale));
     const h = Math.max(1, Math.round(canvas.clientHeight * baseScale * resScale));
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; staticDirty = true; }
+    if (bgCanvas && (bgCanvas.width !== w || bgCanvas.height !== h)) { bgCanvas.width = w; bgCanvas.height = h; staticDirty = true; }
     dirty = true;
   }
   function setSong(vm) {
@@ -147,7 +168,7 @@ const PiTV = (function () {
     // with a MINIMUM gap so dense bars GROW to fit their notes (sparse passages stay beat-spaced).
     // lx is the column's horizontal position in beat-units; anchT/anchLx map real time -> lx so
     // the playhead stays time-correct. game view is unaffected (it uses time directly).
-    const SLOT_EPS = 0.030, MIN_GAP = 0.30;
+    const SLOT_EPS = 0.030;   // MIN_GAP is module-level (shared with render's px-gap floor)
     const anchT = [], anchLx = [];
     let slotT = -1e9, slotLx = 0, prevB = 0, first = true;
     for (let i = 0; i < N; i++) {                   // notes are sorted by start time (song.py)
@@ -197,7 +218,7 @@ const PiTV = (function () {
   function setView(v) { view = v; dirty = true; staticDirty = true; }
   // channels the player covers (Set) -> the rest is hidden; null = show all (Listen).
   // hand ('R'/'L') optionally narrows to one hand of a single-channel part (the other dims).
-  function setPlay(channels, hand) { playSet = channels ? new Set(channels) : null; playHand = (hand === 'R' || hand === 'L') ? hand : null; recomputeDrumMode(); dirty = true; }
+  function setPlay(channels, hand, track) { playSet = channels ? new Set(channels) : null; playHand = (hand === 'R' || hand === 'L') ? hand : null; playTrk = (track == null ? null : track); recomputeDrumMode(); dirty = true; }
   // Drum staff when the visible notes are all percussion: a drum-only song, or the drum part (ch9)
   // selected as the part to view/play in a full-band song.
   function recomputeDrumMode() {
@@ -238,9 +259,10 @@ const PiTV = (function () {
     // This stops the freeze-clamp from fighting the correction — the cause of overshoot-then-jitter
     // around a note when you hold the key early.
     while (freezeMode && gatePtr < gateTimes.length && t > gateTimes[gatePtr] + 0.02) gatePtr++;
-    // TEST: heartbeat correction DISABLED — the local clock free-runs (rAF integrates real time);
-    // we only re-sync on the discrete snap above (seek/pause/loop, |diff|>0.5). If this is smooth on
-    // the laptop, the jitter was the continuous network-coupled correction (solution #1 confirmed).
+    // The local rAF clock is accurate; the heartbeat arrives with network jitter, so don't chase small
+    // diffs (free-run within a dead-zone) — only gently correct genuine drift. Seeks/pauses snap above.
+    const d = t - now;
+    if (Math.abs(d) > 0.12) now += d * 0.10;
     dirty = true;
   }
   // While frozen at a gate, light the keys you owe — computed locally so the amber is instant.
@@ -255,13 +277,15 @@ const PiTV = (function () {
       if (Math.abs(nt.t - gt) > 0.05) continue;
       if (playSet && !playSet.has(nt.ch)) continue;
       if (playHand && nt.hand !== playHand) continue;
-      if (nt.n < rangeLo || nt.n > rangeHi) continue;
+      if (playTrk != null && nt.ch === 9 && nt.trk !== playTrk) continue;   // a different drummer's track
+      if (!drumMode && (nt.n < rangeLo || nt.n > rangeHi)) continue;   // drums aren't bound to the keyboard range
       w.push(nt.n);
     }
     waiting = true; setWanted(w);
   }
   function setLoop(a, b) { loopA = (a == null ? null : a); loopB = (b == null ? null : b); dirty = true; }
   function setNames(on) { showNames = !!on; dirty = true; }
+  function setNoteScale(f) { f = +f; if (f >= 0.6 && f <= 1.5) { noteScale = f; try { localStorage.setItem('pimaestro.noteSize', f); } catch (e) {} staticDirty = true; dirty = true; } }   // notation size preference
   function setWanted(list) {                            // amber "you owe this" cue — on the piano keys OR the drum kit
     const wait = (n, on) => { if (keys[n]) keys[n].classList.toggle('wait', on); const kp = kit[KIT_MAP[n]]; if (kp) kp.classList.toggle('wait', on); };
     for (const n in wantedSet) { wait(n, false); delete wantedSet[n]; }
@@ -414,18 +438,19 @@ const PiTV = (function () {
   // Hal-Leonard-style placements: kick bottom space (stem down), snare 3rd space, toms descending,
   // hats/ride/crash as X on/above the top line, hi-hat pedal X below the staff.
   const DRUM_MAP = {
-    35: { pos: -3, g: 'o', v: 'dn' }, 36: { pos: -3, g: 'o', v: 'dn' },     // bass drum (kick)
-    41: { pos: -3, g: 'o', v: 'up' }, 43: { pos: -3, g: 'o', v: 'up' },     // floor tom (shares kick space, stem up)
-    45: { pos: -1, g: 'o', v: 'up' }, 47: { pos: -1, g: 'o', v: 'up' },     // low/mid tom (2nd space)
-    48: { pos: 3, g: 'o', v: 'up' }, 50: { pos: 3, g: 'o', v: 'up' },       // high tom (4th space)
+    35: { pos: -3, g: 'o', v: 'dn' }, 36: { pos: -3, g: 'o', v: 'dn' },     // bass drum (kick) — bottom space, stem down
+    48: { pos: 3, g: 'o', v: 'up' }, 50: { pos: 3, g: 'o', v: 'up' },       // tom 1 (highest) — 4th space
+    45: { pos: 2, g: 'o', v: 'up' }, 47: { pos: 2, g: 'o', v: 'up' },       // tom 2 — 4th line
+    43: { pos: -1, g: 'o', v: 'up' }, 58: { pos: -1, g: 'o', v: 'up' },     // tom 3 — 2nd space (distinct from tom 4 below it)
+    41: { pos: -2, g: 'o', v: 'up' }, 39: { pos: -2, g: 'o', v: 'up' },     // tom 4 (lowest) — 2nd line, above the kick
     38: { pos: 1, g: 'o', v: 'up' }, 40: { pos: 1, g: 'o', v: 'up' },       // snare (3rd space)
     37: { pos: 1, g: 'x', v: 'up' },                                        // side stick
     42: { pos: 4, g: 'x', v: 'up' },                                        // closed hi-hat (top line)
     46: { pos: 4, g: 'x', v: 'up', open: true },                           // open hi-hat
-    44: { pos: -5, g: 'x', v: 'dn' },                                       // hi-hat pedal (foot, below staff)
+    23: { pos: 4, g: 'x', v: 'up' },                                        // half-open hi-hat (stick)
+    44: { pos: -5, g: 'x', v: 'dn' }, 21: { pos: -5, g: 'x', v: 'dn' },     // hi-hat FOOT: pedal + splash (below staff)
     51: { pos: 5, g: 'x', v: 'up' }, 59: { pos: 5, g: 'x', v: 'up' }, 53: { pos: 5, g: 'x', v: 'up' },  // ride
-    49: { pos: 6, g: 'x', v: 'up' }, 57: { pos: 6, g: 'x', v: 'up' }, 55: { pos: 6, g: 'x', v: 'up' }, 52: { pos: 6, g: 'x', v: 'up' },  // crash/splash/china
-    39: { pos: 1, g: 'x', v: 'up' },                                       // hand clap (snare line, X)
+    49: { pos: 6, g: 'x', v: 'up' }, 57: { pos: 6, g: 'x', v: 'up' }, 55: { pos: 6, g: 'x', v: 'up' }, 52: { pos: 6, g: 'x', v: 'up' },  // crash 1 / crash 2 / splash / china
     54: { pos: 5, g: 'x', v: 'up' }, 56: { pos: 5, g: 'x', v: 'up' },      // tambourine / cowbell (above staff)
     69: { pos: 6, g: 'x', v: 'up' }, 70: { pos: 6, g: 'x', v: 'up' }, 82: { pos: 6, g: 'x', v: 'up' },  // cabasa / maracas / shaker
   };
@@ -447,7 +472,8 @@ const PiTV = (function () {
 
   // Shared notation geometry (used by both the static layer and the scrolling layer).
   function notationGeom(W, H) {
-    const step = Math.max(6, Math.min(13, H / 40));   // px per stave-index step
+    const bs = baseScale * resScale;                  // backing-px per display-px: scale the clamp by it
+    const step = Math.max(6 * bs, Math.min(13 * bs * noteScale, H / 40));   // px per stave-index step (size = resolution-independent, user-scalable)
     const s = step / 7;                               // PB-unit -> px scale (PB: 7 == one step)
     // Staff-centre offset: bass & treble centres must be 12 steps apart so middle C
     // (idx -6 in treble, +6 in bass) lands on the SAME line — a proper grand staff. (was
@@ -461,7 +487,7 @@ const PiTV = (function () {
     const nAcc = Math.min(Math.abs(key), 7);
     const scrollX = ksX + Math.max(64 * s, nAcc * ksGap + 22 * s);
     const endX = W - 14;
-    const playX = scrollX + (endX - scrollX) * 0.4;   // play zone at 40% (PB Cfg::playZoneX)
+    const playX = scrollX + (endX - scrollX) * 0.3;   // play zone at 30% — more lead-in (notes coming) than trailing
     const markTop = trebleC - 8 * step, markBot = bassC + 8 * step;
     const yOf = (staff, idx) => (staff === 'treble' ? trebleC : bassC) - idx * step;
     return { step, s, trebleC, bassC, x0, clefX, tsX, ksX, ksGap, key, nAcc, scrollX, endX, playX, markTop, markBot, yOf };
@@ -512,15 +538,27 @@ const PiTV = (function () {
     // Per-variant overrides: geom(W,H) buildStatic(W,H,g) drawHead(nt,x,g,i)->stemSpec visible(nt) playedYs(g)
     render(W, H) {
       const g = this.geom(W, H);
-      if (staticDirty || !staticCv || staticCv.width !== W || staticCv.height !== H) this.buildStatic(W, H, g);
-      ctx.drawImage(staticCv, 0, 0);                  // blit the cached staff + header
+      // STATIC layer: rebuild the staff/header only when it changes, and paint it onto the BACKGROUND
+      // canvas (composited by the GPU for free). The per-frame foreground draw (below) never touches it
+      // — that's what removes the full-canvas blit that was capping the framerate even with no notes.
+      if (staticDirty || !staticCv || staticCv.width !== W || staticCv.height !== H) {
+        this.buildStatic(W, H, g);
+        if (bgCtx) { bgCtx.clearRect(0, 0, W, H); bgCtx.drawImage(staticCv, 0, 0); }
+      }
+      if (!bgCtx) ctx.drawImage(staticCv, 0, 0);      // fallback (no bg layer): blit onto the main canvas
       if (!song) return;
       const { step, s, scrollX, endX, playX, markTop, markBot, staves, barNumY } = g;
       // ---- scrolling region (engraving-spaced; clipped so it can't bleed into the header) ----
       const beats = song.beats, num = (song.timesig && song.timesig[0]) || 4;
       const aT = vmLay.anchT || [], aLx = vmLay.anchLx || [];   // real time <-> layout-x anchors
       const BEATS_AHEAD = 8;
-      const ppb = Math.max(24, (endX - playX) / BEATS_AHEAD);   // px per layout unit
+      // px-gap FLOOR (resolution-independent): the layout's minimum column advance (MIN_GAP units)
+      // must render as at least one notehead + half a notehead of clear space, so adjacent notes
+      // never crowd. headW = 2*NW (NW = 6*s = notehead half-width / stem offset, see drawStems).
+      // Computed from s, which scales with the backing-store size, so it holds at 720p, 1080p, etc.
+      // Dense passages zoom in to honour this (fewer beats shown ahead); sparse stay time-spaced.
+      const minGapPpb = 1.5 * (12 * s) / MIN_GAP;               // MIN_GAP units -> 1.5 head-widths
+      const ppb = Math.max(24, minGapPpb, (endX - playX) / BEATS_AHEAD);   // px per layout unit
       const nowLx = interp(aT, aLx, now);
       const bx = lx => playX + (lx - nowLx) * ppb;
       const behind = (playX - scrollX) / ppb + 1;
@@ -696,9 +734,10 @@ const PiTV = (function () {
   // ---- drum variant: one 5-line percussion staff; placement/glyph/stem from DRUM_MAP ----
   class DrumStaff extends NotationView {
     geom(W, H) {
-      const step = Math.max(8, Math.min(22, H / 22)), s = step / 7, center = H / 2, x0 = 12;
+      const bs = baseScale * resScale;                // backing-px per display-px: scale the clamp by it so the staff size is constant across resScale
+      const step = Math.max(8 * bs, Math.min(22 * bs * noteScale, H / 22)), s = step / 7, center = H / 2, x0 = 12;
       const clefX = x0 + 22 * s, tsX = x0 + 50 * s, scrollX = tsX + 30 * s, endX = W - 14;
-      const playX = scrollX + (endX - scrollX) * 0.4, yOf = pos => center - pos * step;
+      const playX = scrollX + (endX - scrollX) * 0.3, yOf = pos => center - pos * step;
       return { step, s, center, x0, clefX, tsX, scrollX, endX, playX, yOf,
                markTop: yOf(8), markBot: yOf(-8),
                staves: [{ top: yOf(4), bot: yOf(-4) }], barNumY: yOf(4) - 1.6 * step };
@@ -724,7 +763,7 @@ const PiTV = (function () {
       }
       ctx = save; staticDirty = false;
     }
-    visible(nt) { return nt.ch === 9; }
+    visible(nt) { return nt.ch === 9 && (playTrk == null || nt.trk === playTrk); }   // one drummer's track when picked
     playedYs(g) {
       if (!playedSet.size) return null;
       const ys = [];
@@ -753,9 +792,9 @@ const PiTV = (function () {
   /* ---- frame ---- */
   function draw() {
     const W = canvas.width, H = canvas.height;
-    ctx.clearRect(0, 0, W, H);
+    ctx.clearRect(0, 0, W, H);                        // foreground: wiped + redrawn every frame (moving content only)
     if (view === 'notation') (drumMode ? drumView : pianoView).render(W, H);
-    else drawGame(W, H);
+    else { if (bgCtx) bgCtx.clearRect(0, 0, W, H); drawGame(W, H); }   // game view has no static staff -> clear the bg layer
   }
   // Hold 60fps the way game engines do: draw EVERY frame (never skip — motion stays smooth), but
   // adapt the render RESOLUTION to the budget. We track a smoothed draw cost; if it creeps toward the
@@ -778,5 +817,5 @@ const PiTV = (function () {
   }
 
   return { buildKeyboard, highlight, flashWrong, attachCanvas, setSong, setPlayed, setView, setPlay, setRange, setLoop, setNames,
-           enableClock, setClock, setGates, clearGateUpto, setRated, setFreezeMode, correctNow, clockState };
+           enableClock, setClock, setGates, clearGateUpto, setRated, setFreezeMode, correctNow, clockState, setNoteScale };
 })();

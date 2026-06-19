@@ -152,6 +152,23 @@ def broadcast(obj):
 conductor = Conductor(broadcast)
 
 
+def _midi_inputs():
+    """ALSA seq addresses of every attached hardware MIDI controller (piano keyboard, drum kit,
+    …), so the player can plug in or SWAP either one without reconfiguring. Skips the kernel
+    plumbing (System/Timer/Through/Announce), our own FluidSynth, and PipeWire."""
+    try:
+        out = subprocess.run(["aseqdump", "-l"], capture_output=True, text=True).stdout
+    except FileNotFoundError:
+        return []
+    skip = ("system", "timer", "announce", "midi through", "fluid synth", "pipewire", "rt-event")
+    ports = []
+    for line in out.splitlines():
+        m = re.match(r"\s*(\d+:\d+)\s+(.+)", line)        # "<client:port>  <client name>  <port name>"
+        if m and not any(s in m.group(2).lower() for s in skip):
+            ports.append(m.group(1))
+    return ports
+
+
 def midi_reader(port):
     try:
         listing = subprocess.run(["aseqdump", "-l"], capture_output=True, text=True).stdout
@@ -160,11 +177,21 @@ def midi_reader(port):
         print("ERROR: aseqdump not found (install alsa-utils)", file=sys.stderr, flush=True)
         return
     while True:
-        print(f"connecting MIDI input '{port}'...", flush=True)
-        proc = subprocess.Popen(["aseqdump", "-p", port], stdout=subprocess.PIPE,
+        # Honor an explicit --midi NAME if that device is present; otherwise read EVERY attached
+        # controller at once, so swapping keyboard <-> drum kit (or using either) needs no restart.
+        present = subprocess.run(["aseqdump", "-l"], capture_output=True, text=True).stdout.lower()
+        ins = _midi_inputs()
+        conn = [port] if (port and port.lower() in present) else ins
+        if not conn:
+            print("no MIDI controller attached; rescanning in 2s", flush=True)
+            time.sleep(2); continue
+        target = ",".join(conn)
+        print(f"connecting MIDI input '{target}'...", flush=True)
+        proc = subprocess.Popen(["aseqdump", "-p", target], stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, bufsize=1)
-        # route the keyboard into FluidSynth for local sound (idempotent; harmless if off)
-        subprocess.run(["aconnect", port, "FLUID Synth"], capture_output=True)
+        # route each controller into FluidSynth for local sound (idempotent; harmless if off)
+        for c in conn:
+            subprocess.run(["aconnect", c, "FLUID Synth"], capture_output=True)
         for line in proc.stdout:
             if "ote" not in line:          # skip the Clock/Active-Sensing flood before regex
                 continue
@@ -178,7 +205,7 @@ def midi_reader(port):
                 conductor.on_note(note)               # feed Follow-You gating
             broadcast({"type": typ, "note": note, "velocity": vel})
         proc.wait()
-        print(f"'{port}' input ended (keyboard off?); retrying in 2s", flush=True)
+        print("MIDI input ended (controller off / swapped?); rescanning in 2s", flush=True)
         time.sleep(2)
 
 
@@ -253,7 +280,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _c_play(self, req): conductor.play(); self._json({"ok": True})
     def _c_stop(self, req): conductor.stop(); self._json({"ok": True})
     def _c_reset(self, req): conductor.rewind(); self._json({"ok": True})
-    def _c_play_parts(self, req): conductor.set_play(req.get("channels"), req.get("hand")); self._json({"ok": True})
+    def _c_play_parts(self, req): conductor.set_play(req.get("channels"), req.get("hand"), req.get("track")); self._json({"ok": True})
     def _c_mode(self, req): conductor.set_mode(req.get("mode", "follow")); self._json({"ok": True})
     def _c_speed(self, req): conductor.set_speed(req.get("mult", 1.0)); self._json({"ok": True})
     def _c_loop(self, req): conductor.set_loop(req.get("start"), req.get("end")); self._json({"ok": True})
@@ -426,7 +453,7 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8080)
-    ap.add_argument("--midi", default="DigitalKBD")
+    ap.add_argument("--midi", default="")   # "" = read every attached controller (keyboard/kit); else a device-name filter
     ap.add_argument("--tls-port", type=int, default=8443)
     ap.add_argument("--tls-cert", default="")
     ap.add_argument("--tls-key", default="")

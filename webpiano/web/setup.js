@@ -45,9 +45,14 @@ const PiSetup = (function () {
     const v = handSel.value;
     if (v === 'R') return vm.rightChan != null ? [vm.rightChan] : [];
     if (v === 'L') return vm.leftChan != null ? [vm.leftChan] : [];
-    if (v === 'drums') return [9];                        // play the drum kit (-> percussion staff)
+    if (v === 'drums' || v.indexOf('drk:') === 0) return [9];   // play the drum kit (-> percussion staff)
     if (v && v.indexOf('ch:') === 0) return [parseInt(v.slice(3), 10)];
     return [...new Set([vm.rightChan, vm.leftChan].filter(c => c != null))];   // 'both'
+  }
+  // Which DRUM track (when a file has >1 on ch9, e.g. two drummers); null = the single/merged drum part.
+  function partTrack() {
+    const v = handSel.value;
+    return (v && v.indexOf('drk:') === 0) ? parseInt(v.slice(4), 10) : null;
   }
   // When both hands live on ONE channel, R/L can't be a channel — split by pitch instead.
   function partHand() {
@@ -63,15 +68,20 @@ const PiSetup = (function () {
     const add = (val, label) => { const o = document.createElement('option'); o.value = val; o.textContent = label; handSel.appendChild(o); };
     const r = vm.rightChan, l = vm.leftChan;
     const hasPiano = (r != null || l != null);
-    const hasDrums = (vm.parts || []).some(p => p.ch === 9);
+    const dts = vm.drumTracks || [];
+    const hasDrums = dts.length > 0 || (vm.parts || []).some(p => p.ch === 9);
     if (hasPiano) { add('both', 'Both hands'); add('R', 'Right hand'); add('L', 'Left hand'); }
-    if (hasDrums) add('drums', 'Drums');                  // play the kit -> drum notation
+    if (dts.length > 1) {                                 // >1 drum track (e.g. two drummers) -> pick which
+      dts.forEach((d, i) => add('drk:' + d.trk, 'Drums' + (d.name ? ' — ' + d.name : ' ' + (i + 1))));
+    } else if (hasDrums) {
+      add('drums', 'Drums');                              // play the kit -> drum notation
+    }
     (vm.parts || []).forEach(p => {                       // any other instrument you could play
       if (p.ch === 9 || p.ch === r || p.ch === l) return; // drums / piano part already covered
       add('ch:' + p.ch, 'Play: ' + (GM_NAMES[p.program] || ('Part ' + p.ch)));
     });
     if (!handSel.options.length) add('both', 'All');
-    handSel.value = hasPiano ? 'both' : (hasDrums ? 'drums' : handSel.options[0].value);   // drum-only -> Drums
+    handSel.value = hasPiano ? 'both' : (dts.length > 1 ? 'drk:' + dts[0].trk : (hasDrums ? 'drums' : handSel.options[0].value));   // drum-only -> Drums (busiest track)
   }
 
   /* ---- instruments: one sound chooser per part (built into the Tracks menu section) ---- */
@@ -151,7 +161,7 @@ const PiSetup = (function () {
 
   return {
     init(c) { Object.assign(ctx, c); },
-    buildInstr, buildPartOptions, partChannels, partHand, updateModeHint, fillSetupHead, updateFavBtn,
+    buildInstr, buildPartOptions, partChannels, partHand, partTrack, updateModeHint, fillSetupHead, updateFavBtn,
     setHand(v) { if (v != null) handSel.value = v; },                       // app restores/adopts the dropdown label
     handValue() { return handSel.value; },                                  // app persists it in saved settings
     handMirror() { return { html: handSel.innerHTML, value: handSel.value }; },   // the pause overlay clones it

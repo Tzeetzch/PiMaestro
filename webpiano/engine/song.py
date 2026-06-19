@@ -14,6 +14,7 @@ import os
 
 from .midifile import parse_midi
 from .notation import note_pos, note_type, note_name
+from .scorekeeper import DRUM_ZONE
 
 DEFAULT_TEMPO = 500_000          # usec per quarter note == 120 bpm, until the file says otherwise
 MIDDLE_C = 60                    # provisional hand split (real hand selection is M2)
@@ -251,6 +252,20 @@ def build_view_model(path: str, transpose=0, kbd_lo=None, kbd_hi=None, split=MID
         seen[ch]["count"] += 1
     parts.sort(key=lambda p: p["ch"])
 
+    # drum tracks: all percussion shares ch9; list each track so a multi-drum-track file lets the
+    # player pick which one (notes keep `trk`; the conductor/renderer filter by it). Busiest first.
+    dcount, dgrp = {}, {}
+    for n in notes:
+        if n["ch"] == 9:
+            ti = n["trk"]
+            dcount[ti] = dcount.get(ti, 0) + 1
+            dgrp.setdefault(ti, {}).setdefault(n["t"], set()).add(DRUM_ZONE.get(n["n"]))
+    def _imposs(ti):  # beats needing >2 hands at once (percussion overlay on a kit) — unplayable for one
+        return sum(1 for zs in dgrp[ti].values() if sum(z not in ("kick", "hatpedal") for z in zs) > 2)
+    # most PLAYABLE first (fewest impossible chords), busiest as tiebreak -> default = the real single kit
+    drum_tracks = sorted(({"trk": ti, "name": "", "count": dcount[ti]} for ti in dcount),
+                         key=lambda d: (_imposs(d["trk"]), -d["count"]))
+
     return {
         "title": title,
         "transpose": shift,
@@ -261,6 +276,7 @@ def build_view_model(path: str, transpose=0, kbd_lo=None, kbd_hi=None, split=MID
         "timesig": list(timesig),
         "programs": programs,
         "parts": parts,
+        "drumTracks": drum_tracks,
         "rightChan": right,
         "leftChan": left,
         "bars": _grid_times(meter_map, pm.ppqn, tmap, duration, "bar"),
