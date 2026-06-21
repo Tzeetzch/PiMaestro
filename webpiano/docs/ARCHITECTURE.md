@@ -159,6 +159,88 @@ deliberate (a TV + a parent's tablet drive one song). True multi-session would b
 - Library (favorites, recently-played, **best-stars**) lives on the Pi too (same per-song store), so star
   badges and progress follow the song to any client.
 
+## Drums (Follow-You for percussion)
+
+Drums are a first-class Follow-You instrument, not a display. The contract differs from piano because
+the input is a real drum kit (an Alesis Nitro — see `docs/DRUM-KIT.md` for its pad→note map) and a
+human drummer has only **2 hands + 2 feet**.
+
+- **When it's a drum part:** `conductor._drum_part()` is true when `play == {9}` (GM percussion).
+  Setup's "Drums" option → `partChannels()` → `[9]`; piano parts never include channel 9. In a drum
+  part `_rebuild_gates` sets `self._rhythm` and gates every ch9 beat, **ignoring the keyboard range**
+  (drum "pitches" are GM piece numbers, not playable keys).
+- **Match by kit ZONE, not exact pitch.** `DRUM_ZONE` (in `scorekeeper.py`) collapses ~30 GM/Alesis
+  notes into a handful of zones (kick, snare, 4 toms, hi-hat, hi-hat-foot, 2 crashes, ride). A gate's
+  stored pitch set lights the abstract kit's amber cue; clearing it requires hitting each due **zone**
+  (any hi-hat/crash articulation counts). `DRUM_ZONE` MUST stay in sync with `KIT_MAP` in `render.js`.
+  No wrong-note flagging on drums — a stray pad just doesn't advance (and still sounds via live MIDI).
+- **Anatomy cap** (`conductor._gate_met`): a drum gate needs all **foot** pieces (kick, hi-hat pedal)
+  plus at least `min(2, #hand-pieces)` **hand** zones. This keeps physically-impossible chords (messy
+  transcriptions that stack 3+ cymbals/drums on one beat) clearable. Piano is unchanged: every wanted
+  note required.
+- **Chord window** (`DRUM_CHORD_WINDOW`, drums only): `_fresh()` drops latched hits older than the
+  window (real seconds) relative to the most recent, so a multi-piece beat must be struck **together**
+  — you can't store one drum, wait, then hit the rest. Piano keeps the forgiving latch-forever (see
+  the gating note below). This is the one place drums apply a chord window to *gating*; for piano the
+  chord window is scoring-only.
+- **Sound** is free: drums are never "mine" in `_rebuild_auto` (reachable requires ch≠9), so they stay
+  in the accompaniment and `_service_auto` HOLDS them at the gate until cleared — the real drum fires
+  on the beat you play.
+- **Scoring** (`scorekeeper.finalize(..., rhythm=True)`) rates by zone, each due zone needing a
+  matching hit, bounded to the midpoints of adjacent gates so one hit can't double-count across beats.
+
+### Multiple drum tracks (e.g. two-drummer charts)
+
+All percussion shares channel 9, so a file with more than one drum track would merge into one
+impossible "super-kit". The VM exposes `drumTracks` (one entry per ch9 track, `{trk, name, count}`,
+ordered **most-playable first** — fewest >2-hand chords, computed by `_imposs` in `gp.py`/`song.py`).
+Setup lists each as its own part ("Drums — <name>"). The conductor filters gates + accompaniment by
+`self._trk` (set via the `play_parts` `track` field); `render.js` filters `visible`/the cue by
+`playTrk`. **The conductor NEVER merges:** `_ensure_drum_trk()` defaults `_trk` to `drumTracks[0]`
+when drums are played and no track is chosen — otherwise the gate waits on notes the chosen view
+never shows. The selected `trk` ships in the `hello` snapshot so a reconnecting client re-syncs.
+
+## Gating (Follow-You match model)
+
+- A wanted gate-note, once pressed, **latches** — `_fresh()` returns the satisfied set with NO
+  wall-clock decay; it is cleared only when the gate advances (and on seek/reset). This is what makes
+  slow practice and spread-out chords work. (Drums are the exception — see the chord window above.)
+- **Do not reintroduce a real-time cutoff into the piano latch.** That was a historical bug: it
+  expired a correct early press before the (slower-than-real-time) song reached the gate, re-freezing
+  at 0.5× and walling beginners who spread a chord. `EARLY_WINDOW` (0.30, **song-time**, in `on_note`)
+  still blocks way-too-early presses.
+- **Two cursors, kept separate on purpose:** the freeze cursor (`_gate_idx`, advanced in
+  `_advance_gates`, emits the `gate {gi}` SSE the browser unfreezes on) and the scoring cursor (in
+  ScoreKeeper, drives `rating` events). Don't collapse them onto one index — they diverge and the
+  client scrolls past unplayed chords.
+
+## MIDI input + the kit as a remote
+
+- **Any controller, swappable, no config:** `server.py` `_midi_inputs()` parses `aseqdump -l`, keeps
+  hardware ports (skips System/Timer/Through/Announce, FluidSynth, PipeWire), and the reader subscribes
+  to *all* of them at once (and `aconnect`s each to FluidSynth for sound). So a piano keyboard and a
+  drum kit can be plugged in or swapped freely; a controller attached after start is picked up within
+  ~2s. `--midi NAME` is an optional filter (default `""` = all).
+- **The drum kit doubles as a D-pad remote when not playing:** `app.js` `KIT_KEY` maps T1=Up, T2=Down,
+  T3=Left, T4=Right, snare=OK, kick=Back to synthetic keydowns (reusing PiNav), with a debounce.
+  Guarded by `!playing` — during a song the pads are for drumming only, never menu control.
+
+## Notation rendering (smoothness on the Pi 4)
+
+The Pi 4's VideoCore can't fill a full 1080p canvas every frame at high refresh. Two measures keep the
+scroll smooth without softening the UI:
+- **Static background layer:** the staff/clefs/time-sig are drawn once onto a separate background
+  canvas (`#fallbg`) and GPU-composited; the foreground canvas (`#fall`) redraws only moving content
+  (notes, beat lines, playhead) each frame. This removes the per-frame full-canvas staff blit that
+  capped the framerate even with no notes on screen.
+- **Tunable render resolution:** the scrolling canvas renders into a backing store scaled by `resScale`
+  (CSS upscales it to the layout box), so it changes **sharpness only, never size/zoom** — all geometry
+  derives from `canvas.width/height`. The DOM/UI stays crisp at native. `PiResScale(f)` tunes it live.
+- **Resolution-independent, user-scalable size:** the staff `step` is clamped in *backing* pixels
+  (scaled by `baseScale * resScale`), so the on-screen size is constant across render resolutions —
+  this was the fix for "everything looks weirdly big at lower resolution". Notation size is also a user
+  preference (Settings → Display → Notation size), multiplying that clamp.
+
 ## Known follow-ups (from the review panel)
 
 - Trim the VM payload / fetch via cacheable GET instead of inlining the full VM in `hello` for huge MIDIs.
