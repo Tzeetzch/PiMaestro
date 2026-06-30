@@ -14,7 +14,7 @@ import os
 
 from .midifile import parse_midi
 from .notation import note_pos, note_type, note_name
-from .scorekeeper import DRUM_ZONE
+from .scorekeeper import DRUM_ZONE, tag_drum_notes
 
 DEFAULT_TEMPO = 500_000          # usec per quarter note == 120 bpm, until the file says otherwise
 MIDDLE_C = 60                    # provisional hand split (real hand selection is M2)
@@ -238,6 +238,7 @@ def build_view_model(path: str, transpose=0, kbd_lo=None, kbd_hi=None, split=MID
             "sym": note_type(max(en - st, 1), pm.ppqn), "nm": note_name(pitch, key),
         })
     notes.sort(key=lambda n: (n["t"], n["n"]))
+    notes = tag_drum_notes(notes)        # drop junk percussion; flag aux perc as background ('bg')
 
     duration = max((n["t"] + n["d"] for n in notes), default=0.0)
     title = os.path.splitext(os.path.basename(path))[0].replace("_", " ")
@@ -256,7 +257,7 @@ def build_view_model(path: str, transpose=0, kbd_lo=None, kbd_hi=None, split=MID
     # player pick which one (notes keep `trk`; the conductor/renderer filter by it). Busiest first.
     dcount, dgrp = {}, {}
     for n in notes:
-        if n["ch"] == 9:
+        if n["ch"] == 9 and not n.get("bg"):     # background aux perc isn't a playable kit piece
             ti = n["trk"]
             dcount[ti] = dcount.get(ti, 0) + 1
             dgrp.setdefault(ti, {}).setdefault(n["t"], set()).add(DRUM_ZONE.get(n["n"]))

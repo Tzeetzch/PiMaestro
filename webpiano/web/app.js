@@ -35,7 +35,8 @@
         finish = $('finish'), finStars = $('finStars'), finSub = $('finSub'), finAgain = $('finAgain'), finPick = $('finPick'),
         countin = $('countin'),
         pauseEl = $('pause'), pMode = $('pMode'), pSpeed = $('pSpeed'), pHand = $('pHand'),
-        pResume = $('pResume'), pRestart = $('pRestart'), pMore = $('pMore'), pQuit = $('pQuit');
+        pResume = $('pResume'), pRestart = $('pRestart'), pMore = $('pMore'), pQuit = $('pQuit'),
+        pickKbd = $('pickKbd'), pickDrum = $('pickDrum'), instrSwitch = $('instrSwitch');
 
   /* ---- navigation: ONE view at a time, ROOTED AT HOME. Home -> Library -> Setup -> Stage.
          Back goes up one level. The Stage is just a view you Play into and Quit out of — there is
@@ -66,8 +67,41 @@
   }
   menuBack.onclick = () => go(PARENT[view] || 'home');
   menuSettings.onclick = () => go('settings');
-  $('homeStart').onclick = () => go('library');
   $('homeSettings').onclick = () => go('settings');
+
+  /* ---- instrument choice: the home cards + the library toggle. It's a DEFAULT + a FILTER, never a
+     lock — every song stays playable whether or not the matching instrument is attached (listen/preview).
+     Inline SVG (no emoji font on the Pi's Chromium). ---- */
+  const SVG_PIANO = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="7.3" y="5" width="3" height="6.5" rx="0.5" fill="currentColor" stroke="none"/><rect x="13.7" y="5" width="3" height="6.5" rx="0.5" fill="currentColor" stroke="none"/></svg>';
+  const SVG_DRUM = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="17" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="7.5" cy="5" r="1.7" fill="currentColor" stroke="none"/><line x1="16.4" y1="6.4" x2="5" y2="20"/><line x1="8.1" y1="6.4" x2="19" y2="20"/></svg>';
+  function updateInstrSwitch() {                          // the toggle shows the instrument you'd switch TO
+    const toDrums = PiSession.instrument !== 'drums';
+    instrSwitch.innerHTML = (toDrums ? SVG_DRUM : SVG_PIANO) + ' ' + (toDrums ? 'Drums' : 'Keyboard');
+    instrSwitch.title = 'Show ' + (toDrums ? 'drum' : 'keyboard') + ' songs';
+  }
+  function chooseInstrument(instr, stay) {
+    PiSession.instrument = instr;
+    localStorage.setItem('pitv.instrument', instr);
+    updateInstrSwitch();
+    PiLib.render();                                       // re-filter the rail/grid to this instrument
+    if (stay) { if (PiNav.isKbd()) setTimeout(() => PiNav.focusAt(instrSwitch), 0); }   // toggle in-library: stay put
+    else go('library');                                   // chosen on Home: advance to the (filtered) library
+  }
+  function updateDevices(d) {                             // live connection status — informational only
+    if (!d) return;
+    const mark = (btn, on) => { btn.classList.toggle('connected', !!on); const t = btn.querySelector('.itxt'); if (t) t.textContent = on ? 'connected' : 'not detected'; };
+    mark(pickKbd, d.keyboard); mark(pickDrum, d.drums);
+    let pref = PiSession.instrument;                      // a FOCUS hint only — does not commit the choice
+    if (d.keyboard && !d.drums) pref = 'keyboard';
+    else if (d.drums && !d.keyboard) pref = 'drums';
+    pickKbd.classList.toggle('preferred', pref === 'keyboard');
+    pickDrum.classList.toggle('preferred', pref === 'drums');
+    if (view === 'home' && PiNav.isKbd()) PiNav.focusFirst();   // move the ring onto the now-connected card
+  }
+  pickKbd.onclick = () => chooseInstrument('keyboard');
+  pickDrum.onclick = () => chooseInstrument('drums');
+  instrSwitch.onclick = () => chooseInstrument(PiSession.instrument === 'drums' ? 'keyboard' : 'drums', true);
+
   startBtn.onclick = () => { if (!playing) playBtn.click(); };   // "Play now" -> playBtn takes us to the Stage
 
   // Keyboard-size presets -> MIDI [lowest, highest] note. Keys outside the chosen range
@@ -116,6 +150,12 @@
     const savedSpeed = localStorage.getItem('pitv.speed');
     if (savedSpeed) speedSel.value = savedSpeed;
     control({ cmd: 'speed', mult: +speedSel.value }).catch(() => {});   // sync engine to the UI
+  })();
+  (function restoreInstrument() {
+    const s = localStorage.getItem('pitv.instrument');
+    if (s === 'keyboard' || s === 'drums') PiSession.instrument = s;
+    updateInstrSwitch();
+    fetch('/devices').then(r => r.json()).then(updateDevices).catch(() => {});   // dots before the first SSE frame
   })();
   kbdSel.onchange = async () => {
     localStorage.setItem('pitv.kbd', kbdSel.value);
@@ -454,6 +494,7 @@
     // Only ADOPT the Pi's song on connect when it's actually PLAYING (a real reconnect / a 2nd
     // device joining mid-song). An idle Pi may still hold a song loaded from before — ignore it,
     // so a fresh load / F5 starts clean on the Library instead of dumping you into a random song.
+    if (m.devices) updateDevices(m.devices);               // hello carries the current device set
     if (m.type === 'hello') {
       if (m.vm && m.playing && (!PiSession.vm || m.file !== PiSession.file)) {
         adoptHello(m); setPlayBtn(true); go('stage');   // join the in-progress song
@@ -489,6 +530,7 @@
   // SSE protocol -> handler map (was a 7-way if/else on m.type)
   PiSse.start({
     pos: onPos, hello: onPos,
+    devices: updateDevices,                                // attached controllers changed -> update the home dots live
     reload: () => location.reload(),                       // server pushed new app code -> refresh (e.g. the TV kiosk)
     key: m => { PiNav.setKbd(true); document.dispatchEvent(new KeyboardEvent('keydown', { key: m.key, bubbles: true, cancelable: true })); },
     gate: m => PiTV.clearGateUpto(m.gi),                   // freeze cursor cleared -> local clock resumes here
@@ -512,6 +554,7 @@
   PiCatalog.init({ control, onChange: () => PiLib.render() });
   PiLib.init({
     getSongs: () => PiCatalog.songs(), getMeta: (f) => PiCatalog.meta(f),
+    getInstrument: () => PiSession.instrument,                // filter the rail/grid to the chosen instrument
     coverGlyph: PiCatalog.coverGlyph, coverBg: PiCatalog.coverBg,
     onPick: selectSong,                                       // a song tile was chosen
     onUpload: (files, prog) => PiCatalog.upload(files, prog), // MIDIs dropped on the upload button

@@ -8,8 +8,9 @@ const PiNav = (function () {
   const $ = id => document.getElementById(id);
   const backBtn = $('quitStage'), playBtn = $('play'), resetBtn = $('reset'), viewBtn = $('view'), seekEl = $('seek'),
         menuBack = $('menuBack'), soundTop = $('soundTop'), menuSettings = $('menuSettings'),   // topbar (shared across menu screens)
-        groupTabs = $('groupTabs'), songList = $('songList'), uploadBtn = $('uploadBtn'), startBtn = $('startBtn'),
-        finish = $('finish'), finAgain = $('finAgain'), finPick = $('finPick'), homeStart = $('homeStart'),
+        groupTabs = $('groupTabs'), songList = $('songList'), uploadBtn = $('uploadBtn'), startBtn = $('startBtn'), instrSwitch = $('instrSwitch'),
+        finish = $('finish'), finAgain = $('finAgain'), finPick = $('finPick'),
+        pickKbd = $('pickKbd'), pickDrum = $('pickDrum'), homeSettings = $('homeSettings'),
         pauseEl = $('pause'), pMode = $('pMode'), pSpeed = $('pSpeed'), pHand = $('pHand'),
         pResume = $('pResume'), pRestart = $('pRestart'), pMore = $('pMore'), pQuit = $('pQuit');
 
@@ -29,8 +30,10 @@ const PiNav = (function () {
     const sc = $(ctx.screens[view]);
     const top = [menuBack, soundTop, menuSettings].filter(vis);   // topbar — reachable by D-pad on every menu screen
     let cols;
-    if (view === 'library') {                             // category rail | the song GRID (modeled as real columns)
-      const tabs = Array.from(groupTabs.querySelectorAll('.gcat, .gtab')).filter(vis);
+    if (view === 'home') {                                // two side-by-side instrument cards | Settings below each
+      cols = [[pickKbd, homeSettings].filter(vis), [pickDrum, homeSettings].filter(vis)];
+    } else if (view === 'library') {                      // instrument toggle + category rail | the song GRID (real columns)
+      const tabs = [instrSwitch].filter(vis).concat(Array.from(groupTabs.querySelectorAll('.gcat, .gtab')).filter(vis));
       const items = Array.from(songList.querySelectorAll('.songitem')).filter(vis);
       if (!items.length) { cols = [tabs, [songList.querySelector('.hint.empty'), uploadBtn].filter(vis)]; }
       else {
@@ -58,7 +61,7 @@ const PiNav = (function () {
   }
   function focusFirst() {
     const view = ctx.getView();
-    if (view === 'home' && vis(homeStart)) return focusAt(homeStart);         // primary action ("Start playing") first
+    if (view === 'home') { const pref = document.querySelector('#screenHome .icard.preferred'); return focusAt(vis(pref) ? pref : pickKbd); }   // focus the connected/chosen instrument
     if (view === 'setup' && vis(startBtn)) return focusAt(startBtn);          // primary action ("Play now") first
     if (view === 'library') { const sel = songList.querySelector('.songitem.on'); if (vis(sel)) return focusAt(sel); }
     const c = navCols(); for (const col of c) { if (col.length) { focusAt(col[0]); return; } }   // first NON-EMPTY column (an empty rail must not strand focus before Upload)

@@ -763,7 +763,7 @@ const PiTV = (function () {
       }
       ctx = save; staticDirty = false;
     }
-    visible(nt) { return nt.ch === 9 && (playTrk == null || nt.trk === playTrk); }   // one drummer's track when picked
+    visible(nt) { return nt.ch === 9 && !nt.bg && (playTrk == null || nt.trk === playTrk); }   // one drummer's track; skip background aux perc (sounds, not shown)
     playedYs(g) {
       if (!playedSet.size) return null;
       const ys = [];

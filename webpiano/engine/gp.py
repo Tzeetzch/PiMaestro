@@ -18,7 +18,7 @@ import guitarpro
 
 from .notation import note_pos, note_type, note_name
 from .song import MIDDLE_C, MAX_NOTES, _group_chords
-from .scorekeeper import DRUM_ZONE
+from .scorekeeper import DRUM_ZONE, tag_drum_notes
 
 PPQN = 960   # synthetic ticks-per-quarter, only so we can reuse notation.note_type for the symbol
 
@@ -108,6 +108,7 @@ def build_view_model(path, transpose=0, kbd_lo=None, kbd_hi=None, split=MIDDLE_C
             "sym": sym, "nm": note_name(pitch, key),
         })
     notes.sort(key=lambda n: (n["t"], n["n"]))
+    notes = tag_drum_notes(notes)        # drop junk percussion; flag aux perc as background ('bg')
 
     # ---- parts / programs ----
     programs, parts, seen = {}, [], {}
@@ -128,7 +129,7 @@ def build_view_model(path, transpose=0, kbd_lo=None, kbd_hi=None, split=MIDDLE_C
     # busiest first = the default. Notes keep their `trk`, so the conductor/renderer filter by it. ----
     dcount, dname, dgrp = {}, {}, {}
     for n in notes:
-        if n["ch"] == 9:
+        if n["ch"] == 9 and not n.get("bg"):     # background aux perc isn't a playable kit piece
             ti = n["trk"]
             dcount[ti] = dcount.get(ti, 0) + 1
             dname.setdefault(ti, ((tracks[ti].name or "").strip() if ti < len(tracks) else ""))

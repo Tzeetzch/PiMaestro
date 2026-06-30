@@ -157,8 +157,19 @@
   .home-logo{ font-size:84px; line-height:1; color:var(--accent); }
   .home-title{ margin:0; font-size:clamp(40px,7vh,64px); font-weight:800; letter-spacing:.5px; }
   .home-tagline{ margin:0 0 24px; color:var(--txt2); font-size:19px; }
-  .home-actions{ display:flex; flex-direction:column; gap:16px; width:min(440px,80vw); }
-  .home-actions .btn{ width:100%; }
+  .home-chooser{ display:flex; gap:18px; justify-content:center; flex-wrap:wrap; width:min(540px,86vw); margin-bottom:6px; }
+  .icard{ flex:1 1 200px; max-width:240px; background:var(--surface); border:1px solid var(--line2); color:var(--txt);
+    border-radius:var(--r2); padding:28px 20px 22px; text-align:center; cursor:pointer; font:inherit;
+    display:flex; flex-direction:column; align-items:center; gap:12px;
+    transition:background var(--ease),border-color var(--ease),box-shadow var(--ease); }
+  .icard:hover{ background:var(--surface2); }
+  .icard.nav-here,.icard:focus-visible{ outline:none; border-color:var(--accent); box-shadow:0 0 0 2px var(--accent); }
+  .icard .ico{ color:var(--accent2); line-height:0; }
+  .icard .iname{ font-size:21px; font-weight:700; }
+  .icard .istat{ display:inline-flex; align-items:center; gap:8px; font-size:13.5px; color:var(--txt2); }
+  .icard .iled{ width:9px; height:9px; border-radius:50%; background:var(--dim); transition:background var(--ease); }
+  .icard.connected .iled{ background:#39d98a; }
+  .icard.connected .istat{ color:#39d98a; }
   .body{ flex:1 1 0; min-height:0; overflow-y:auto; padding:var(--sp4) var(--sp4) var(--sp5); }
   .body .wrap{ max-width:840px; }
   .wrap{ max-width:var(--maxw); margin:0 auto; width:100%; }
@@ -171,6 +182,14 @@
   .rail{ flex:0 0 300px; overflow-y:auto; padding:24px 16px; border-right:1px solid var(--line); display:flex; flex-direction:column; gap:4px;
     background:linear-gradient(180deg,rgba(255,255,255,.02),transparent); }
   .rail h2{ font-size:13px; letter-spacing:.12em; text-transform:uppercase; color:var(--txt2); margin:6px 12px 12px; }
+  .rail .railhead{ display:flex; align-items:center; gap:8px; margin:6px 12px 12px; }
+  .rail .railhead h2{ margin:0; }
+  .instr-switch{ margin-left:auto; font:inherit; font-size:12.5px; font-weight:600; color:var(--accent2);
+    background:var(--accent-soft); border:1px solid var(--line2); border-radius:var(--pill); padding:6px 11px;
+    cursor:pointer; display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
+    transition:color var(--ease),border-color var(--ease); }
+  .instr-switch:hover,.instr-switch.nav-here{ color:var(--txt); border-color:var(--accent); }
+  .instr-switch svg{ display:block; }
   .gtab{ font:inherit; font-size:19px; font-weight:600; text-align:left; color:var(--txt2); background:transparent;
     border:none; border-radius:var(--r1); padding:16px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px;
     transition:background var(--ease),color var(--ease); }
@@ -331,17 +350,26 @@
       <div class="home-inner">
         <div class="home-logo"><svg viewBox="0 0 24 24" width="1em" height="1em" aria-hidden="true" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55a4 4 0 1 0 4 4V7h4V3z"/></svg></div>
         <h1 class="home-title">PiMaestro</h1>
-        <p class="home-tagline">Learn piano on the big screen.</p>
-        <div class="home-actions">
-          <button id="homeStart" class="btn lg primary">&#9654; Start playing</button>
-          <button id="homeSettings" class="btn lg">&#9881; Settings</button>
+        <p class="home-tagline">What are you playing today?</p>
+        <div class="home-chooser">
+          <button id="pickKbd" class="icard" type="button">
+            <span class="ico"><svg viewBox="0 0 24 24" width="46" height="46" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="7.3" y="5" width="3" height="6.5" rx="0.5" fill="currentColor" stroke="none"/><rect x="13.7" y="5" width="3" height="6.5" rx="0.5" fill="currentColor" stroke="none"/></svg></span>
+            <span class="iname">Keyboard</span>
+            <span class="istat"><span class="iled"></span><span class="itxt">checking&hellip;</span></span>
+          </button>
+          <button id="pickDrum" class="icard" type="button">
+            <span class="ico"><svg viewBox="0 0 24 24" width="46" height="46" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="17" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="7.5" cy="5" r="1.7" fill="currentColor" stroke="none"/><line x1="16.4" y1="6.4" x2="5" y2="20"/><line x1="8.1" y1="6.4" x2="19" y2="20"/></svg></span>
+            <span class="iname">Drums</span>
+            <span class="istat"><span class="iled"></span><span class="itxt">checking&hellip;</span></span>
+          </button>
         </div>
+        <button id="homeSettings" class="btn">&#9881; Settings</button>
       </div>
     </section>
 
     <!-- LIBRARY -->
     <section id="screenSongs" class="screen" hidden>
-      <nav class="rail"><h2>Library</h2><div id="groupTabs"></div></nav>
+      <nav class="rail"><div class="railhead"><h2>Library</h2><button id="instrSwitch" class="instr-switch" type="button"></button></div><div id="groupTabs"></div></nav>
       <div class="listpane">
         <div class="listhead"><h1 id="libTitle">Songs</h1><span id="libSub" class="sub"></span></div>
         <ul id="songList"></ul>

@@ -407,6 +407,8 @@ class Conductor:
                     continue                                      # only the drum part gates
                 if self._trk is not None and int(n.get("trk", -1)) != self._trk:
                     continue                                      # a different drummer's track — not the one you picked
+                if n.get("bg"):
+                    continue                                      # background aux perc sounds via auto, never gated
             elif ch == 9 or not (self._lo <= n["n"] <= self._hi):
                 continue                                          # drums / off your keyboard
             elif not (ch in self._play and (self._hand is None or n.get("hand") == self._hand)):

@@ -34,6 +34,28 @@ DRUM_ZONE = {
 }
 
 
+def tag_drum_notes(notes):
+    """Classify the percussion (channel-9) notes and return the kept list:
+      - a real kit piece (in DRUM_ZONE)            -> left as-is: gated, drawn, sounded (you play it)
+      - valid GM percussion NOT on the 8-pad kit   -> marked n['bg']=True: it still SOUNDS as backing
+        (auto-played accompaniment), but is never gated or drawn — e.g. triangle, shaker, tambourine,
+        guiro. So you hear the full groove without being asked to hit a pad you don't have.
+      - anything else on ch9 (e.g. a bad tab's phantom note-0)  -> dropped as junk.
+    GM percussion spans ~27..87; kit pieces 21/23 (hi-hat pedal/half-open) are kept via DRUM_ZONE."""
+    out = []
+    for n in notes:
+        if n.get("ch") == 9:
+            p = n["n"]
+            if p in DRUM_ZONE:
+                pass
+            elif 27 <= p <= 87:
+                n["bg"] = True
+            else:
+                continue
+        out.append(n)
+    return out
+
+
 class ScoreKeeper:
     RATE_GIVEUP = 0.6        # play-along: declare a miss this long (s) after the note's time
     EARLY_TOL = 0.07         # finished earlier than this (s) before the line = "early"

@@ -15,11 +15,13 @@ const PiSession = (function () {
   let vm = null,        // the loaded view-model (the song timeline the engine returned), or null
       file = null,      // that song's path on the Pi (load identity), or null when nothing is loaded
       play = [],        // MIDI channels the player covers (their part); the rest is accompaniment
-      hand = null;      // 'R'/'L' to split a single-channel song by pitch, else null
+      hand = null,      // 'R'/'L' to split a single-channel song by pitch, else null
+      instrument = 'keyboard';  // which instrument the player chose ('keyboard'|'drums'); filters the library
   return {
     get vm() { return vm; }, set vm(v) { vm = v; },
     get file() { return file; }, set file(v) { file = v; },
     get play() { return play; }, set play(v) { play = v; },
     get hand() { return hand; }, set hand(v) { hand = v; },
+    get instrument() { return instrument; }, set instrument(v) { instrument = v; },
   };
 })();

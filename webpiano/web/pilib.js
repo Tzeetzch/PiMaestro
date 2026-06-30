@@ -30,29 +30,28 @@ const PiLib = (function () {
   let songsByGroup = {}, currentGroup = null, selected = null;
   let ctx = {
     getSongs: () => [], getMeta: () => null, coverGlyph: () => '♫', coverBg: () => '',
-    onPick: () => {}, onUpload: () => Promise.resolve({ ok: 0, fail: 0, last: null }),
+    getInstrument: () => 'keyboard', onPick: () => {}, onUpload: () => Promise.resolve({ ok: 0, fail: 0, last: null }),
   };
   const FAV = '★ Favorites', RECENT = '◷ Recently played';
 
-  function favList() { return ctx.getSongs().filter(s => { const m = ctx.getMeta(s.file); return m && m.fav; }); }
+  // Show only the chosen instrument's songs (folder-derived category). Drums -> the Drums groups;
+  // Keyboard -> everything else. A pure filter: it hides clutter, never blocks a song from loading.
+  function inInstrument(s) {
+    return ctx.getInstrument() === 'drums' ? catOf(s.group) === 'Drums' : catOf(s.group) !== 'Drums';
+  }
+  function visibleSongs() { return ctx.getSongs().filter(inInstrument); }
+  function favList() { return visibleSongs().filter(s => { const m = ctx.getMeta(s.file); return m && m.fav; }); }
   function recentList() {
-    return ctx.getSongs().filter(s => { const m = ctx.getMeta(s.file); return m && m.played; })
+    return visibleSongs().filter(s => { const m = ctx.getMeta(s.file); return m && m.played; })
       .sort((a, b) => ctx.getMeta(b.file).played - ctx.getMeta(a.file).played).slice(0, 20);
   }
-  // Two-level rail: groups roll up into collapsible categories (Drums / Piano / More).
-  const CATS = ['Drums', 'Piano', 'More'];
+  // Classify a group's folder into an instrument bucket — drives the instrument FILTER (inInstrument) above.
   function catOf(g) {
     if (/^Drums\b/.test(g)) return 'Drums';
     if (/^(Game|Popular|Uploads)\b/.test(g)) return 'More';
     return 'Piano';                          // piano-first app: course, lessons, my songs all live here
   }
-  function subLabel(g) { return g.replace(/^(Drums|Piano)\s*-\s*/, ''); }   // hide the category prefix
-  let collapsedCats = new Set((localStorage.getItem('pitv.collapsed') || '').split(',').filter(Boolean));
-  function toggleCat(c) {
-    collapsedCats.has(c) ? collapsedCats.delete(c) : collapsedCats.add(c);
-    localStorage.setItem('pitv.collapsed', [...collapsedCats].join(','));
-    render();
-  }
+  function subLabel(g) { return g.replace(/^(Drums|Piano)\s*-\s*/, ''); }   // hide the (now-implicit) instrument prefix
   function songsForGroup(g) {
     if (g === FAV) return favList();
     if (g === RECENT) return recentList();
@@ -62,20 +61,6 @@ const PiLib = (function () {
     return h('button', { class: 'gtab' + (sub ? ' sub' : '') + (g === currentGroup ? ' on' : ''), tabIndex: 0,
       onclick: () => { currentGroup = g; render(); } },
       h('span', null, subLabel(g)), h('span', { class: 'count' }, String(songsForGroup(g).length)));
-  }
-  // Inline SVG (currentColor) so it renders on the Pi's Chromium, which has no emoji font.
-  const CAT_ICON = {
-    Drums: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="17" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="7.5" cy="5" r="1.7" fill="currentColor" stroke="none"/><line x1="16.4" y1="6.4" x2="5" y2="20"/><line x1="8.1" y1="6.4" x2="19" y2="20"/></svg>',
-    Piano: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="7.3" y="5" width="3" height="6.5" rx="0.5" fill="currentColor" stroke="none"/><rect x="13.7" y="5" width="3" height="6.5" rx="0.5" fill="currentColor" stroke="none"/></svg>',
-    More: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6.5" cy="17.5" r="2.4" fill="currentColor" stroke="none"/><circle cx="16.5" cy="15.5" r="2.4" fill="currentColor" stroke="none"/><path d="M8.9 17.5V6.5l9.6-2v11"/></svg>',
-  };
-  function gcat(c, count) {
-    const open = !collapsedCats.has(c);
-    return h('button', { class: 'gcat' + (open ? ' open' : ''), tabIndex: 0, onclick: () => toggleCat(c) },
-      h('span', { class: 'chev' }, open ? '▾' : '▸'),
-      h('span', { class: 'cicon', html: CAT_ICON[c] || '' }),
-      h('span', { class: 'gcat-name' }, c),
-      h('span', { class: 'count' }, String(count)));
   }
   function songItem(s) {
     const m = ctx.getMeta(s.file) || {};
@@ -91,25 +76,20 @@ const PiLib = (function () {
         h('div', { class: 'si-title' }, s.title),
         h('div', { class: 'si-meta' }, ...meta)));
   }
-  // Left rail: collapsible category headers + their group tabs (Favourites/Recently on top).
+  // Left rail: a FLAT list of the chosen instrument's groups (Favourites/Recently pinned on top). The
+  // old Drums/Piano/More category tree is gone — the instrument is now chosen on the Home screen, so the
+  // top-level split it provided is redundant. Groups arrive already ordered (server sorts by folder prefix).
   function render() {
     songsByGroup = {};
-    for (const s of ctx.getSongs()) (songsByGroup[s.group] = songsByGroup[s.group] || []).push(s);
+    for (const s of visibleSongs()) (songsByGroup[s.group] = songsByGroup[s.group] || []).push(s);
     const real = Object.keys(songsByGroup);
     const virtual = [];
     if (recentList().length) virtual.push(RECENT);
     if (favList().length) virtual.push(FAV);
     const all = virtual.concat(real);
     if (!currentGroup || !all.includes(currentGroup)) currentGroup = all[0] || null;
-    if (currentGroup && !virtual.includes(currentGroup)) collapsedCats.delete(catOf(currentGroup));  // keep the selection visible
     groupTabs.innerHTML = '';
-    virtual.forEach(g => groupTabs.append(gtab(g)));
-    for (const c of CATS) {
-      const groups = real.filter(g => catOf(g) === c);
-      if (!groups.length) continue;
-      groupTabs.append(gcat(c, groups.reduce((n, g) => n + songsForGroup(g).length, 0)));
-      if (!collapsedCats.has(c)) groups.forEach(g => groupTabs.append(gtab(g, true)));
-    }
+    all.forEach(g => groupTabs.append(gtab(g)));
     fillSongList();
   }
   function fillSongList() {

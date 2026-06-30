@@ -115,9 +115,45 @@ class PowerControl:
         return self._action
 
 
+# ---- which controllers are attached right now, each classified keyboard|drums. A detector thread
+# polls ALSA and updates this; the browser reads it via /devices + the SSE 'devices' event. PURELY
+# informational — nothing gates playback on it (you can listen to a drum song with no kit attached). ----
+class DeviceRegistry:
+    # name tokens that mark a controller as a drum kit; everything else is treated as a keyboard
+    # (the common case — e.g. the Yamaha reports as a keyboard). Logged on change, so a mis-tagged
+    # future device is a one-line fix.
+    DRUM_TOKENS = ("nitro", "drum", "td-", "dtx", "percussion", "crash")
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._state = {"keyboard": False, "drums": False, "names": []}
+
+    @classmethod
+    def classify(cls, descr):
+        d = descr.lower()
+        return "drums" if any(t in d for t in cls.DRUM_TOKENS) else "keyboard"
+
+    def update(self, ports):
+        """ports = [(addr, descr), ...] from _midi_ports(). Returns (changed, state)."""
+        names, kinds = [], set()
+        for _addr, descr in ports:
+            names.append(descr)
+            kinds.add(self.classify(descr))
+        state = {"keyboard": "keyboard" in kinds, "drums": "drums" in kinds, "names": names}
+        with self._lock:
+            changed = (state != self._state)
+            self._state = state
+        return changed, state
+
+    def state(self):
+        with self._lock:
+            return dict(self._state)
+
+
 CATALOG = SongCatalog()
 SETTINGS = SettingsStore()
 POWER = PowerControl()
+REGISTRY = DeviceRegistry()
 
 clients = []
 clients_lock = threading.Lock()
@@ -152,10 +188,11 @@ def broadcast(obj):
 conductor = Conductor(broadcast)
 
 
-def _midi_inputs():
-    """ALSA seq addresses of every attached hardware MIDI controller (piano keyboard, drum kit,
+def _midi_ports():
+    """(addr, description) for every attached hardware MIDI controller (piano keyboard, drum kit,
     …), so the player can plug in or SWAP either one without reconfiguring. Skips the kernel
-    plumbing (System/Timer/Through/Announce), our own FluidSynth, and PipeWire."""
+    plumbing (System/Timer/Through/Announce), our own FluidSynth, and PipeWire. The detector reads
+    the descriptions (to classify keyboard vs drums); the reader reads the addresses."""
     try:
         out = subprocess.run(["aseqdump", "-l"], capture_output=True, text=True).stdout
     except FileNotFoundError:
@@ -165,8 +202,49 @@ def _midi_inputs():
     for line in out.splitlines():
         m = re.match(r"\s*(\d+:\d+)\s+(.+)", line)        # "<client:port>  <client name>  <port name>"
         if m and not any(s in m.group(2).lower() for s in skip):
-            ports.append(m.group(1))
+            ports.append((m.group(1), re.sub(r"\s{2,}", " ", m.group(2).strip())))
     return ports
+
+
+def _midi_inputs():
+    """ALSA seq addresses of attached controllers (the reader connects these)."""
+    return [addr for addr, _descr in _midi_ports()]
+
+
+# The note-reader's live aseqdump + the controllers it's bound to. The detector kicks this when the
+# attached set changes, so a reader blocked on a dead subscription (e.g. the kit re-enumerated after a
+# power/USB blip) recovers and re-routes, instead of staying "connected" while silently reading nothing.
+_reader = {"proc": None, "conn": []}
+_reader_lock = threading.Lock()
+
+
+def device_detector():
+    """Watch which controllers are attached and tell the browser. The note-reader can't do this:
+    once a device is streaming it's blocked reading that stream and never re-checks, so it can't
+    notice a 2nd device appear or tell a keyboard from a kit. This thread does nothing but
+    list → classify → diff, every 2s, and pushes an SSE 'devices' event ONLY when the set changes
+    (so the home screen's status dots update live with no client-side polling)."""
+    while True:
+        try:
+            changed, state = REGISTRY.update(_midi_ports())
+            if changed:
+                print(f"devices: keyboard={state['keyboard']} drums={state['drums']} {state['names']}", flush=True)
+                broadcast({"type": "devices", **state})
+                # The set changed (device added / removed / re-enumerated). If the note-reader is mid-stream
+                # it's blocked on an aseqdump that won't notice on its own — kill it so midi_reader reconnects
+                # to the CURRENT controllers and re-runs aconnect to FluidSynth. (proc is None => the reader
+                # isn't connected yet; it'll pick the device up on its next scan with no help.)
+                with _reader_lock:
+                    p = _reader["proc"]
+                if p is not None:
+                    print("device set changed; reconnecting note-reader", flush=True)
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
+        except Exception as e:                            # never let a transient ALSA hiccup kill the watcher
+            print(f"device_detector error: {e}", file=sys.stderr, flush=True)
+        time.sleep(2)
 
 
 def midi_reader(port):
@@ -192,6 +270,8 @@ def midi_reader(port):
         # route each controller into FluidSynth for local sound (idempotent; harmless if off)
         for c in conn:
             subprocess.run(["aconnect", c, "FLUID Synth"], capture_output=True)
+        with _reader_lock:                                # publish so the detector can kick us on a device change
+            _reader["proc"] = proc; _reader["conn"] = list(conn)
         for line in proc.stdout:
             if "ote" not in line:          # skip the Clock/Active-Sensing flood before regex
                 continue
@@ -205,6 +285,8 @@ def midi_reader(port):
                 conductor.on_note(note)               # feed Follow-You gating
             broadcast({"type": typ, "note": note, "velocity": vel})
         proc.wait()
+        with _reader_lock:
+            _reader["proc"] = None
         print("MIDI input ended (controller off / swapped?); rescanning in 2s", flush=True)
         time.sleep(2)
 
@@ -227,6 +309,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif u.path == "/settings":
             path = (parse_qs(u.query).get("file") or [""])[0]
             self._json((SETTINGS.load_all().get(os.path.realpath(path)) or {}) if CATALOG.is_allowed(path) else {})
+        elif u.path == "/devices":
+            self._json(REGISTRY.state())          # {keyboard, drums, names} for the home status dots on first load
         elif u.path == "/halt":
             self._json(POWER.pending())           # "" | "poweroff" | "reboot" — the session watcher polls this
         elif u.path == "/remote":
@@ -418,8 +502,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with clients_lock:
             clients.append(q)
         try:
-            # resync this client immediately: current song + play position
-            self.wfile.write(f"data: {json.dumps(conductor.snapshot())}\n\n".encode())
+            # resync this client immediately: current song + play position + attached devices
+            snap = conductor.snapshot()
+            snap["devices"] = REGISTRY.state()       # so a fresh TV shows the right status dots without waiting for a change
+            self.wfile.write(f"data: {json.dumps(snap)}\n\n".encode())
             self.wfile.flush()
             while True:
                 try:
@@ -459,6 +545,7 @@ def main():
     ap.add_argument("--tls-key", default="")
     args = ap.parse_args()
     threading.Thread(target=midi_reader, args=(args.midi,), daemon=True).start()
+    threading.Thread(target=device_detector, daemon=True).start()   # watch attached controllers -> SSE 'devices'
     print(f"PiTV server: http://0.0.0.0:{args.port}  (MIDI: {args.midi})", flush=True)
     print(f"song roots: {[r for r in CATALOG.roots if os.path.isdir(r)]}", flush=True)
     # Optional HTTPS on a second port (same handler), so phones/tablets get a secure context —

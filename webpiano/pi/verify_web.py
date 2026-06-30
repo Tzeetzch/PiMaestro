@@ -130,8 +130,8 @@ def main():
             problems.append("sound button click threw: " + str(sndclick))
         print("sound button ->", sndbtn, "| click:", sndclick)
 
-        # drive the library + d-pad: go to library, press Down, confirm focus moved and kbd-mode on
-        ev("document.getElementById('homeStart').click()")
+        # drive the library + d-pad: pick an instrument (Home -> Library), press Down, confirm focus moved and kbd-mode on
+        ev("document.getElementById('pickKbd').click()")
         time.sleep(0.4)
         ev("document.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))")
         time.sleep(0.2)
