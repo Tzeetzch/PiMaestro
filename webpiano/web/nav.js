@@ -12,7 +12,10 @@ const PiNav = (function () {
         finish = $('finish'), finAgain = $('finAgain'), finPick = $('finPick'),
         pickKbd = $('pickKbd'), pickDrum = $('pickDrum'), homeSettings = $('homeSettings'),
         pauseEl = $('pause'), pMode = $('pMode'), pSpeed = $('pSpeed'), pHand = $('pHand'),
-        pResume = $('pResume'), pRestart = $('pRestart'), pMore = $('pMore'), pQuit = $('pQuit');
+        pResume = $('pResume'), pRestart = $('pRestart'), pMore = $('pMore'), pQuit = $('pQuit'),
+        pPrev = $('pPrev'), pNext = $('pNext'),
+        // stage header practice controls (speed − / +, loop A / B / ✕) — reachable from the stage AND the pause panel
+        hdr = ['spdDown', 'spdUp', 'loopA', 'loopB', 'loopX'].map($);
 
   let kbd = true;                                         // TV-first: show the focus ring from the start (a pointerdown turns it off)
   let ctx = {
@@ -24,9 +27,9 @@ const PiNav = (function () {
   function vis(el) { return el && el.offsetParent !== null && !el.disabled; }
   function navCols() {
     const view = ctx.getView();
-    if (!pauseEl.hidden) return [[pMode, pSpeed, pHand, pResume, pRestart, pMore, pQuit].filter(vis)];
+    if (!pauseEl.hidden) return [hdr.concat([pPrev, pNext, pResume, pMode, pSpeed, pHand, pRestart, pMore, pQuit]).filter(vis)];
     if (!finish.hidden) return [[finAgain, finPick].filter(vis)];
-    if (view === 'stage') return [[backBtn, playBtn, resetBtn, viewBtn, seekEl].filter(vis)];
+    if (view === 'stage') return [hdr.concat([backBtn, playBtn, resetBtn, viewBtn, seekEl]).filter(vis)];
     const sc = $(ctx.screens[view]);
     const top = [menuBack, soundTop, menuSettings].filter(vis);   // topbar — reachable by D-pad on every menu screen
     let cols;

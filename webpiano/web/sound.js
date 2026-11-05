@@ -19,6 +19,11 @@ const PiSound = (function () {
   let engineKind = localStorage.getItem('pitv.sndEngine') || 'rich';
   let engine = null;
   const SND_LOOKAHEAD = 0.2;
+  // Per-track mix from the Instruments panel (ch -> {mute, volume 0..127, program}) — the same settings
+  // the Pi's FluidSynth gets, mirrored so the local speaker obeys them too. Cleared per song load
+  // (the conductor resets its mutes on load as well).
+  let partMix = {};
+  const progOf = p => (partMix[p.ch] && partMix[p.ch].program != null) ? partMix[p.ch].program : (p.program || 0);
   // Black-box contract: PiSound names no sibling module. Injected by the app — the current view-model,
   // whether a note is the player's (live, not scheduled), the engine channel, and getClock: the local
   // render clock {playing, t} the scheduler aims at (the app wires it to PiTV; we never reach for PiTV).
@@ -50,7 +55,7 @@ const PiSound = (function () {
     programs() {
       const vm = ctx.getVM();
       if (!this.synth || !vm) return;
-      (vm.parts || []).forEach(p => { try { this.synth.setProgram(p.ch, p.program || 0); } catch (e) {} });
+      (vm.parts || []).forEach(p => { try { this.synth.setProgram(p.ch, progOf(p)); } catch (e) {} });
       try { this.synth.setProgram(0, 0); } catch (e) {}     // live keys = grand piano on ch0
     }
     now() { return this.synth.getAudioContext().currentTime; }
@@ -84,7 +89,7 @@ const PiSound = (function () {
       jobs.push(this._load(L.instrumentInfo(L.findInstrument(0))).then(p => { this.ch[0] = p; }));   // live keys
       (vm.parts || []).forEach(part => {
         if (part.ch === 9) return;                       // drums handled per-note below
-        jobs.push(this._load(L.instrumentInfo(L.findInstrument(part.program || 0))).then(p => { this.ch[part.ch] = p; }));
+        jobs.push(this._load(L.instrumentInfo(L.findInstrument(progOf(part)))).then(p => { this.ch[part.ch] = p; }));
       });
       await Promise.all(jobs).catch(() => {});
     }
@@ -144,7 +149,7 @@ const PiSound = (function () {
     }
     programs() {
       const vm = ctx.getVM(); if (!this.synth || !vm) return;
-      (vm.parts || []).forEach(p => { if (p.ch !== 9) { try { this.synth.midiProgramChange(p.ch, p.program || 0); } catch (e) {} } });
+      (vm.parts || []).forEach(p => { if (p.ch !== 9) { try { this.synth.midiProgramChange(p.ch, progOf(p)); } catch (e) {} } });
       try { this.synth.midiProgramChange(0, 0); } catch (e) {}   // live keys = grand piano on ch0 (ch9 stays GM drums)
     }
     now() { return audioCtx.currentTime; }
@@ -183,8 +188,12 @@ const PiSound = (function () {
       if (nt.t > st.t + SND_LOOKAHEAD) break;           // beyond the lookahead window
       schedPtr++;
       if (nt.t < st.t - 0.1 || ctx.isMine(nt)) continue; // already past, or you play it live
+      const mix = partMix[nt.ch];
+      if (mix && mix.mute) continue;                    // muted in the Instruments panel
+      const vel = Math.round((nt.v || 80) * ((mix && mix.volume != null) ? mix.volume : 100) / 100);   // CC7-style: 100 = as written
+      if (vel <= 0) continue;
       const at = audioNow + Math.max(0, (nt.t - st.t) / st.speed);
-      engine.schedule(nt.ch, nt.n, nt.v || 80, at, Math.max(0.05, nt.d / st.speed));
+      engine.schedule(nt.ch, nt.n, Math.min(127, vel), at, Math.max(0.05, nt.d / st.speed));
     }
   }
   function resync() {                                   // after seek / loop / song change: drop + re-aim
@@ -243,5 +252,13 @@ const PiSound = (function () {
     heartbeat: (t) => { const back = t < lastT - 0.3; lastT = t; if (back) resync(); }, // backward jump -> re-aim
     setPiMute,
     isOn: () => soundOn,
+    setPart(ch, s) {                                    // Instruments panel changed a track (mute/volume/program)
+      const m = partMix[ch] || (partMix[ch] = {});
+      if (s.mute != null) m.mute = !!s.mute;
+      if (s.volume != null) m.volume = +s.volume;
+      if (s.program != null) { m.program = +s.program; if (soundOn && engine) engine.programs(); }   // reload that sound
+    },
+    clearParts() { partMix = {}; },                     // new song: back to as-written
+
   };
 })();

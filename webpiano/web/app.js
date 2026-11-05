@@ -61,6 +61,7 @@
       menuBack.hidden = (name === 'home');          // Home is the root — nothing above it
       menuSettings.hidden = (name === 'home' || name === 'settings');
     } else {
+      syncSpeedUI();                                // the header speed chip shows the song's current speed
       requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));   // canvas was display:none
     }
     if (PiNav.isKbd()) setTimeout(PiNav.focusFirst, 0);
@@ -118,6 +119,15 @@
   let transpose = 'auto';                       // octave shift to fit the keyboard ('auto' or semitones)
   let split = 60;                               // left/right hand + treble/bass split pitch (middle C)
   let restoring = false, restoreSeq = 0;        // suppress auto-save while applying saved settings (restoreSeq = the load that owns the flag)
+  let trackMix = {};                            // this song's Instruments-panel mix: ch -> {mute, volume, program} (saved per song)
+  function applyMix() {                         // push the mix to the Pi's synth + the local speaker (the engine resets mutes on load)
+    PiSound.clearParts();
+    Object.keys(trackMix).forEach(ch => {
+      const m = trackMix[ch];
+      PiSound.setPart(+ch, m);
+      control(Object.assign({ cmd: 'part', ch: +ch }, m)).catch(() => {});
+    });
+  }
   let loadSeq = 0;                              // monotonic load token; a stale async load bails instead of clobbering
   let lastT = 0;                                // last streamed play position (for keyboard seek)
   function kbdRange() { return KBD_RANGES[kbdSel.value] || KBD_RANGES[88]; }
@@ -133,6 +143,7 @@
     const settings = {
       hand: PiSetup.handValue(), play: PiSession.play.slice(), speed: speedSel.value,
       transpose: transSel.value, mode: modeSel.value, split: splitSel.value,
+      mix: JSON.parse(JSON.stringify(trackMix)),
     };
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { control({ cmd: 'save_settings', file: file, settings: settings }).catch(() => {}); }, 350);
@@ -178,8 +189,26 @@
     localStorage.setItem('pitv.speed', speedSel.value);
     PiTV.setClock(playing, +speedSel.value);
     control({ cmd: 'speed', mult: +speedSel.value }).catch(() => {});
+    syncSpeedUI();
     saveCurrent();
   };
+  // Header speed chip (− 75% +): steps through the SAME list as the Setup/pause dropdowns, live (no reload).
+  const spdVal = $('spdVal');
+  function syncSpeedUI() {
+    const o = speedSel.options[speedSel.selectedIndex];
+    spdVal.textContent = o ? o.textContent : '';
+    if (!pauseEl.hidden) pSpeed.value = speedSel.value;
+    $('spdDown').disabled = speedSel.selectedIndex <= 0;
+    $('spdUp').disabled = speedSel.selectedIndex >= speedSel.options.length - 1;
+  }
+  function stepSpeed(d) {
+    const i = speedSel.selectedIndex + d;
+    if (i < 0 || i >= speedSel.options.length) return;
+    speedSel.selectedIndex = i; speedSel.onchange();
+  }
+  $('spdDown').onclick = () => stepSpeed(-1);
+  $('spdUp').onclick = () => stepSpeed(1);
+  syncSpeedUI();
 
   // Set which part the player covers (channels + optional hand); the rest becomes background.
   // (The Part dropdown -> channels/hand logic + the Setup screen live in setup.js / PiSetup.)
@@ -222,6 +251,14 @@
     if (Array.isArray(m.play)) { PiSession.play = m.play.slice(); PiSession.hand = m.hand || null; PiSession.trk = (m.trk == null ? null : m.trk); PiTV.setPlay(PiSession.play, PiSession.hand, PiSession.trk); }
     if (typeof m.pi_muted === 'boolean') PiSound.setPiMute(m.pi_muted);   // reflect the engine's real mute state
     PiSetup.updateModeHint(mode);
+    trackMix = {}; PiSound.clearParts();                 // the adopted song's saved mix (the Pi already applied it)
+    const f = PiSession.file;
+    if (f) fetch('/settings?file=' + encodeURIComponent(f)).then(r => r.json()).then(s => {
+      if (PiSession.file !== f || !s || !s.mix || typeof s.mix !== 'object') return;
+      trackMix = s.mix;
+      Object.keys(trackMix).forEach(ch => PiSound.setPart(+ch, trackMix[ch]));
+      if (view === 'setup') PiSetup.buildInstr();
+    }).catch(() => {});
   }
 
   // Show the octave shift the engine actually applied (esp. when Auto picks one).
@@ -255,7 +292,8 @@
       const shift = vm.transpose || 0;
       const stag = shift ? ' · ' + (shift > 0 ? '+' : '') + (shift / 12) + ' oct' : '';
       songLabel.textContent = '♪ ' + vm.title + ' · ' + vm.notes.length + ' notes' + stag;
-      PiSound.resync();                            // new song -> reload instruments + re-aim the scheduler
+      applyMix();                                  // the engine reset its track mutes on load — re-apply the song's mix
+      PiSound.resync();                           // new song -> reload instruments + re-aim the scheduler
       return true;
     } catch (e) {
       songLabel.textContent = 'could not load song';
@@ -279,6 +317,7 @@
     transSel.value = (has && s.transpose) ? s.transpose : 'auto';   // fresh song -> auto-fit
     splitSel.value = (has && s.split) ? s.split : '60';             // fresh song -> middle C
     if (has && s.mode) modeSel.value = s.mode;
+    trackMix = (has && s.mix && typeof s.mix === 'object') ? s.mix : {};   // fresh song -> as written
     transpose = transSel.value === 'auto' ? 'auto' : +transSel.value;
     split = +splitSel.value;
     mode = modeSel.value;
@@ -480,7 +519,17 @@
   });
   PiTransport.init({ getVM: () => PiSession.vm, control, showLoop: (a, b) => PiTV.setLoop(a, b) });   // click-to-seek + loop drilling
   PiSetup.init({                                           // the Setup screen: part dropdown + instruments + hero
-    getVM: () => PiSession.vm, getPlay: () => PiSession.play, getSelFile: () => selFile, control,
+    getVM: () => PiSession.vm, getPlay: () => PiSession.play, getSelFile: () => selFile,
+    getMix: (ch) => trackMix[ch],
+    control: (body) => {                                   // track mute/volume/instrument -> the Pi AND the local speaker, saved per song
+      if (body && body.cmd === 'part') {
+        const m = trackMix[body.ch] || (trackMix[body.ch] = {});
+        ['mute', 'volume', 'program'].forEach(k => { if (body[k] != null) m[k] = body[k]; });
+        PiSound.setPart(body.ch, body);
+        saveCurrent();
+      }
+      return control(body);
+    },
     onPlay: (channels) => { setPlayChannels(channels, null); saveCurrent(); },   // player re-picked their tracks
     onPart: () => applyParts(),                            // player changed the Part dropdown
     coverGlyph: PiCatalog.coverGlyph, coverBg: PiCatalog.coverBg, isFav: PiCatalog.isFav,    // injected — PiSetup never names the catalogue

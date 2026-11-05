@@ -22,6 +22,7 @@ const PiSetup = (function () {
   const handSel = $('handSel'), modeHint = $('modeHint'), instrPanel = $('instrPanel'), favBtn = $('fav');
   let ctx = {
     getVM: () => null, getPlay: () => [], getSelFile: () => null,
+    getMix: () => ({}),   // ch -> the song's saved {mute, volume, program} (the panel renders it)
     control: () => Promise.resolve(), onPlay: () => {}, onPart: () => {},
     coverGlyph: () => '♫', coverBg: () => '', isFav: () => false,
   };
@@ -115,23 +116,26 @@ const PiSetup = (function () {
         plab.appendChild(pcb); plab.appendChild(document.createTextNode('play'));
         row.appendChild(plab);
       }
+      const mix = ctx.getMix(p.ch) || {};
       if (!isDrum) {                                    // GM drums (ch10) ignore program -> mute only
         const sel = document.createElement('select');
-        const opts = COMMON.includes(p.program) ? COMMON : [p.program].concat(COMMON);
+        const cur = mix.program != null ? mix.program : p.program;
+        let opts = COMMON.includes(p.program) ? COMMON : [p.program].concat(COMMON);
+        if (!opts.includes(cur)) opts = [cur].concat(opts);
         opts.forEach(prog => {
           const o = document.createElement('option'); o.value = prog; o.textContent = GM_NAMES[prog] || ('Program ' + prog);
-          if (prog === p.program) o.selected = true;
+          if (prog === cur) o.selected = true;
           sel.appendChild(o);
         });
         sel.onchange = () => { ctx.control({ cmd: 'part', ch: p.ch, program: +sel.value }).catch(() => {}); };
         row.appendChild(sel);
       }
       const vol = document.createElement('input');                 // per-instrument volume (CC7)
-      vol.type = 'range'; vol.min = 0; vol.max = 127; vol.value = 100; vol.className = 'vol'; vol.title = 'Volume';
+      vol.type = 'range'; vol.min = 0; vol.max = 127; vol.value = mix.volume != null ? mix.volume : 100; vol.className = 'vol'; vol.title = 'Volume';
       vol.oninput = () => { ctx.control({ cmd: 'part', ch: p.ch, volume: +vol.value }).catch(() => {}); };
       row.appendChild(vol);
       const lab = document.createElement('label');
-      const cb = document.createElement('input'); cb.type = 'checkbox';
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!mix.mute;
       cb.onchange = () => { ctx.control({ cmd: 'part', ch: p.ch, mute: cb.checked }).catch(() => {}); };
       lab.appendChild(cb); lab.appendChild(document.createTextNode('mute'));
       row.appendChild(lab);

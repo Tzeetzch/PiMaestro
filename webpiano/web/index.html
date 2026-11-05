@@ -83,6 +83,17 @@
   .badge.low{ background:rgba(245,185,66,.14); border-color:var(--warn); color:#f3d49a; }
   .badge.r-early{ background:var(--accent-soft); border-color:var(--accent); color:var(--accent2); }
   .badge.r-miss{ background:rgba(255,100,114,.16); border-color:var(--bad); color:#ffb0b8; }   /* miss / wrong (red) */
+  /* header practice controls (speed − % +, loop Bar n · A · B · label · ✕): change live, no reload */
+  .hgroup{ display:inline-flex; align-items:center; gap:2px; padding:3px; border:1px solid var(--line2);
+    border-radius:var(--pill); background:var(--surface2); flex:0 0 auto; }
+  .hgroup .btn{ min-height:40px; height:40px; padding:0 14px; font-size:16px; border-radius:var(--pill); }
+  .hgroup .btn.icon{ width:40px; padding:0; }
+  .hgroup .val{ padding:0 8px; font-size:16px; font-weight:700; color:var(--txt2); white-space:nowrap; font-variant-numeric:tabular-nums; }
+  #spdVal{ min-width:56px; text-align:center; }
+  #loopLbl.on{ color:var(--accent2); }
+  .hgroup .btn.on{ background:var(--accent); border-color:var(--accent); color:#fff; }   /* beats .ghost: A/B lit while set */
+  .btn:disabled{ opacity:.35; cursor:default; }
+  @media (max-width:1180px){ header .brand, #song{ display:none; } }   /* tablet: room for the practice controls */
 
   #seek{ flex:0 0 auto; height:8px; background:#10161f; cursor:pointer; position:relative; transition:height var(--ease); }
   #seek:hover,#seek:focus-visible{ height:12px; }
@@ -282,6 +293,14 @@
   #countin{ z-index:6; background:none; backdrop-filter:none; pointer-events:none; }
   #countin span{ font-size:clamp(140px,30vh,320px); font-weight:800; color:#fff; text-shadow:0 8px 40px rgba(0,0,0,.6); }
   #pause{ z-index:18; } #finish{ z-index:20; }
+  /* Pause = a panel docked at the BOTTOM, not a full-screen cover: the notation, the seek bar and the
+     header (speed / loop A·B) stay visible + clickable, so you can see where you're jumping to. */
+  #pause{ inset:auto 0 0 0; padding:0 16px 16px; background:none; gap:0; }
+  #pause .ov-card{ max-width:none; width:min(1200px,100%); padding:18px 24px; gap:14px; }
+  #pause .ov-title{ font-size:22px; margin-right:auto; }
+  .ov-pos{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; justify-content:center; width:100%; }
+  #pBar{ min-width:130px; text-align:center; font-weight:700; font-size:18px; font-variant-numeric:tabular-nums; }
+  #pResume{ margin-left:auto; }
   .ov-card{ background:var(--surface); border:1px solid var(--line2); border-radius:var(--r3); box-shadow:var(--shadow);
     padding:40px 44px; display:flex; flex-direction:column; gap:24px; align-items:center; max-width:600px; width:min(600px,92vw); }
   .ov-title{ font-size:clamp(26px,5vh,38px); font-weight:800; }
@@ -315,6 +334,18 @@
       <span class="brand"><span class="logo"><svg viewBox="0 0 24 24" width="1em" height="1em" aria-hidden="true" style="display:inline-block;vertical-align:-.15em" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55a4 4 0 1 0 4 4V7h4V3z"/></svg></span> PiMaestro</span>
       <span id="song" class="dim"></span>
       <span class="grow"></span>
+      <span class="hgroup" title="Speed — changes instantly, no reload">
+        <button id="spdDown" class="btn icon ghost" title="Slower" aria-label="Slower">&minus;</button>
+        <span id="spdVal" class="val">100%</span>
+        <button id="spdUp" class="btn icon ghost" title="Faster" aria-label="Faster">+</button>
+      </span>
+      <span class="hgroup" title="Loop a part: press A in the bar where it starts, B in the bar where it ends">
+        <span id="barNow" class="val">Bar &mdash;</span>
+        <button id="loopA" class="btn ghost" title="The loop starts in this bar">A</button>
+        <button id="loopB" class="btn ghost" title="The loop ends in this bar (starts looping)">B</button>
+        <span id="loopLbl" class="val">Loop off</span>
+        <button id="loopX" class="btn icon ghost" title="Stop looping" aria-label="Stop looping">&#10005;</button>
+      </span>
       <span id="time" class="badge">0:00 / 0:00</span>
       <span id="score" class="badge" role="status" aria-live="assertive" title="Timing: early / good / late per note you play">Timing &mdash;</span>
       <span id="status" class="dot" title="connecting"></span>
@@ -488,8 +519,13 @@
 
   <div id="pause" class="overlay" hidden role="dialog" aria-modal="true" aria-label="Paused">
     <div class="ov-card">
-      <div class="ov-title">&#9208; Paused</div>
-      <div class="ov-btns"><button id="pResume" class="btn lg primary">&#9654; Resume</button></div>
+      <div class="ov-pos">
+        <span class="ov-title">&#9208; Paused</span>
+        <button id="pPrev" class="btn" title="Previous bar">&#9664; Bar</button>
+        <span id="pBar">Bar &mdash;</span>
+        <button id="pNext" class="btn" title="Next bar">Bar &#9654;</button>
+        <button id="pResume" class="btn lg primary">&#9654; Resume</button>
+      </div>
       <div class="ov-opts">
         <label>Mode<select id="pMode"></select></label>
         <label>Speed<select id="pSpeed"></select></label>
