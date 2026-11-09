@@ -218,14 +218,33 @@ _reader = {"proc": None, "conn": []}
 _reader_lock = threading.Lock()
 
 
+def _seq_signature():
+    """The ALSA sequencer's client + port names, from /proc (None if unavailable). Only the name lines
+    count — the file also has traffic counters that change while you play."""
+    try:
+        with open("/proc/asound/seq/clients", encoding="utf-8", errors="replace") as f:
+            return "\n".join(l.strip() for l in f if l.startswith(("Client", "  Port")))
+    except OSError:
+        return None
+
+
 def device_detector():
     """Watch which controllers are attached and tell the browser. The note-reader can't do this:
     once a device is streaming it's blocked reading that stream and never re-checks, so it can't
     notice a 2nd device appear or tell a keyboard from a kit. This thread does nothing but
     list → classify → diff, every 2s, and pushes an SSE 'devices' event ONLY when the set changes
     (so the home screen's status dots update live with no client-side polling)."""
+    last_sig = None
     while True:
         try:
+            # Cheap pre-check: the kernel's sequencer client/port NAMES (a /proc read, no fork). Only when
+            # that list changes (a device plugged / unplugged / re-enumerated) do we run the aseqdump scan
+            # — instead of forking a process every 2s forever. No /proc file -> scan every time, as before.
+            sig = _seq_signature()
+            if sig is not None and sig == last_sig:
+                time.sleep(2)
+                continue
+            last_sig = sig
             changed, state = REGISTRY.update(_midi_ports())
             if changed:
                 print(f"devices: keyboard={state['keyboard']} drums={state['drums']} {state['names']}", flush=True)
@@ -267,9 +286,14 @@ def midi_reader(port):
         print(f"connecting MIDI input '{target}'...", flush=True)
         proc = subprocess.Popen(["aseqdump", "-p", target], stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, bufsize=1)
-        # route each controller into FluidSynth for local sound (idempotent; harmless if off)
+        # route each KEYBOARD into FluidSynth for local sound (idempotent; harmless if off). A drum kit is
+        # not routed (and is unrouted if it was): it has its own sound module the player hears in headphones.
+        kinds = {a: DeviceRegistry.classify(d) for a, d in _midi_ports()}
         for c in conn:
-            subprocess.run(["aconnect", c, "FLUID Synth"], capture_output=True)
+            if kinds.get(c) == "drums":
+                subprocess.run(["aconnect", "-d", c, "FLUID Synth"], capture_output=True)
+            else:
+                subprocess.run(["aconnect", c, "FLUID Synth"], capture_output=True)
         with _reader_lock:                                # publish so the detector can kick us on a device change
             _reader["proc"] = proc; _reader["conn"] = list(conn)
         for line in proc.stdout:
@@ -372,7 +396,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _c_seek(self, req): conductor.seek(req.get("t")); self._json({"ok": True})
     def _c_part(self, req): conductor.set_part(req.get("ch"), req.get("mute"), req.get("program"), req.get("volume")); self._json({"ok": True})
     def _c_pi_mute(self, req): conductor.set_pi_muted(bool(req.get("on"))); self._json({"ok": True})
-    def _c_reload(self, req): broadcast({"type": "reload"}); self._json({"ok": True})   # tell every client to refresh (push new app code)
+    def _c_reload(self, req): broadcast({"type": "reload"}); self._json({"ok": True})
+    # Performance probe: ask every open screen (the TV too) to measure its own drawing for a few seconds;
+    # each reports back and the result lands in perf.log next to server.py (read it over SSH).
+    def _c_perfprobe(self, req):
+        broadcast({"type": "perfprobe", "secs": max(2, min(30, int(req.get("secs") or 8)))}); self._json({"ok": True})
+    def _c_perfreport(self, req):
+        rep = {k: req.get(k) for k in ("ua", "screen", "res", "view", "drums", "frames", "fps", "p50", "p95", "p99", "worst",
+                                      "long", "drawAvg", "drawP95", "secs", "playing", "loaf", "gapsOver25", "heapEnd", "heapLimit")}
+        rep["at"] = time.strftime("%Y-%m-%d %H:%M:%S"); rep["from"] = self.client_address[0]
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "perf.log"), "a") as f:
+            f.write(json.dumps(rep) + "\n")
+        self._json({"ok": True})   # tell every client to refresh (push new app code)
     def _c_key(self, req):
         k = req.get("key")                              # phone remote -> the TV app replays this keypress
         if k:
@@ -405,6 +440,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         "range": _c_range, "seek": _c_seek, "part": _c_part, "pi_mute": _c_pi_mute, "key": _c_key,
         "save_settings": _c_save_settings, "favorite": _c_favorite, "played": _c_played,
         "poweroff": _c_poweroff, "reboot": _c_reboot, "exit": _c_exit, "reload": _c_reload,
+        "perfprobe": _c_perfprobe, "perfreport": _c_perfreport,
     }
 
     # --- API ---

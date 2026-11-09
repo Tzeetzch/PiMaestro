@@ -18,7 +18,7 @@ const PiTransport = (function () {
         pBar = $('pBar'), pPrev = $('pPrev'), pNext = $('pNext');
   // Black-box contract: PiTransport names no sibling module. It mirrors the loop on the canvas through
   // the injected showLoop(start,end) (the app wires it to PiTV); we never reach for PiTV ourselves.
-  let ctx = { getVM: () => null, control: () => Promise.resolve(), showLoop: () => {} };
+  let ctx = { getVM: () => null, control: () => Promise.resolve(), showLoop: () => {}, onLoopChange: () => {} };
   // Loop state lives HERE (not in the Setup inputs) so the header A/B and the Setup card share it.
   // pendingA: A was pressed, waiting for B (shown in the header; not looping yet).
   let loopOn = false, loopFrom = 1, loopTo = 4, pendingA = false;
@@ -71,13 +71,14 @@ const PiTransport = (function () {
   }
   function applyLoop() {
     const vm = ctx.getVM();
-    if (!vm || !loopOn) { ctx.control({ cmd: 'loop', start: null, end: null }).catch(() => {}); ctx.showLoop(null, null); reflectLoop(); return; }
+    if (!vm || !loopOn) { ctx.control({ cmd: 'loop', start: null, end: null }).catch(() => {}); ctx.showLoop(null, null); reflectLoop(); ctx.onLoopChange(); return; }
     loopFrom = clampBar(loopFrom); loopTo = clampBar(loopTo);
     if (loopTo < loopFrom) loopTo = loopFrom;
     const start = barStart(loopFrom), end = barEnd(loopTo);
     ctx.control({ cmd: 'loop', start, end }).catch(() => {});
     ctx.showLoop(start, end);
     reflectLoop();
+    ctx.onLoopChange();                                  // the app saves it with the song
   }
   function clearLoop() {
     loopOn = false; pendingA = false;
@@ -138,7 +139,7 @@ const PiTransport = (function () {
   };
   if (loopA) loopA.onclick = markA;
   if (loopB) loopB.onclick = markB;
-  if (loopX) loopX.onclick = clearLoop;
+  if (loopX) loopX.onclick = () => { clearLoop(); ctx.onLoopChange(); };
   if (pPrev) pPrev.onclick = () => stepBar(-1);
   if (pNext) pNext.onclick = () => stepBar(1);
   reflectLoop();
@@ -149,5 +150,12 @@ const PiTransport = (function () {
     clearLoop,                                           // app calls when a new song loads (bar counts differ)
     showProgress,                                        // app's pos heartbeat paints the bar through this
     stepBar,                                             // ◀/▶ one bar (also bound to keys by the app/nav)
+    getLoop: () => ({ on: loopOn, from: loopFrom, to: loopTo }),   // saved per song by the app
+    restoreLoop(l) {                                     // re-apply a saved loop once the song (its bars) is loaded
+      if (!l || !barCount()) return;
+      loopFrom = clampBar(l.from); loopTo = clampBar(l.to); pendingA = false;
+      loopOn = !!l.on;
+      if (loopOn) applyLoop(); else reflectLoop();
+    },
   };
 })();

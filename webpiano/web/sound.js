@@ -27,6 +27,10 @@ const PiSound = (function () {
   // Black-box contract: PiSound names no sibling module. Injected by the app — the current view-model,
   // whether a note is the player's (live, not scheduled), the engine channel, and getClock: the local
   // render clock {playing, t} the scheduler aims at (the app wires it to PiTV; we never reach for PiTV).
+  // Alesis Nitro sends a few notes outside General MIDI percussion (no sample/sound exists for them):
+  // 23 = half-open hi-hat -> open hi-hat, 21 = hi-hat splash -> pedal hi-hat.
+  const DRUM_ALIAS = { 23: 46, 21: 44 };
+  const gmDrum = n => DRUM_ALIAS[n] || n;
   let ctx = { getVM: () => null, isMine: () => false, control: () => Promise.resolve(), getClock: () => ({ playing: false, t: 0 }) };
 
   function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
@@ -38,7 +42,7 @@ const PiSound = (function () {
     programs() {}                                        // (pre)load the instruments this song needs
     now() { return audioCtx ? audioCtx.currentTime : 0; }
     schedule(ch, n, v, at, dur) {}                       // queue a backing note at audio-time `at`
-    live(note, on, vel) {}                               // a key you pressed, right now
+    live(note, on, vel, drum) {}                         // a key/pad you struck, right now (drum: it's the kit)
     reset() {}                                           // drop everything queued/held
   }
 
@@ -60,7 +64,10 @@ const PiSound = (function () {
     }
     now() { return this.synth.getAudioContext().currentTime; }
     schedule(ch, n, v, at, dur) { this.synth.noteOn(ch, n, v, at); this.synth.noteOff(ch, n, at + dur); }
-    live(note, on, vel) { if (on) this.synth.noteOn(0, note, vel || 96, 0); else this.synth.noteOff(0, note, 0); }
+    live(note, on, vel, drum) {
+      if (drum) { if (on) this.synth.noteOn(9, gmDrum(note), vel || 96, 0); return; }   // kit pad -> percussion, let it ring
+      if (on) this.synth.noteOn(0, note, vel || 96, 0); else this.synth.noteOff(0, note, 0);
+    }
     reset() { try { this.synth.reset(); } catch (e) {} }
   }
 
@@ -97,7 +104,9 @@ const PiSound = (function () {
     schedule(ch, n, v, at, dur) {
       try {
         if (ch === 9) {                                  // percussion: one sample per drum note
-          const L = this.player.loader, di = L.findDrum(n); if (di < 0) return;
+          n = gmDrum(n);
+          const L = this.player.loader, di = L.findDrum(n);
+          if (parseInt(L.drumKeys()[di], 10) !== n) return;   // findDrum falls back to index 0 (a kick) for unknown notes
           const info = L.drumInfo(di), preset = window[info.variable] || this.drums[n];
           if (!preset) { this._load(info).then(p => { this.drums[n] = p; }); return; }   // first hit loads (silent), then ready
           this.player.queueWaveTable(audioCtx, audioCtx.destination, preset, at, info.pitch, dur, v / 127);
@@ -107,7 +116,8 @@ const PiSound = (function () {
         }
       } catch (e) {}
     }
-    live(note, on, vel) {
+    live(note, on, vel, drum) {
+      if (drum) { if (on) this.schedule(9, note, vel || 96, audioCtx.currentTime, 0.5); return; }   // kit pad -> its drum sample
       try {
         const preset = this.ch[0]; if (!preset) return;
         if (on) { if (this.env[note]) this.env[note].cancel(); this.env[note] = this.player.queueWaveTable(audioCtx, audioCtx.destination, preset, audioCtx.currentTime, note, 9999, (vel || 96) / 127); }
@@ -160,9 +170,10 @@ const PiSound = (function () {
       const off = setTimeout(() => { this.timers.delete(off); try { s.midiNoteOff(ch, n); } catch (e) {} }, delay + Math.max(40, dur * 1000));
       this.timers.add(on); this.timers.add(off);
     }
-    live(note, on, vel) {
+    live(note, on, vel, drum) {
       if (!this.synth) return;
-      try { on ? this.synth.midiNoteOn(0, note, vel || 96) : this.synth.midiNoteOff(0, note); } catch (e) {}
+      const ch = drum ? 9 : 0, n = drum ? gmDrum(note) : note;   // kit pad -> the GM percussion channel
+      try { on ? this.synth.midiNoteOn(ch, n, vel || 96) : this.synth.midiNoteOff(ch, n); } catch (e) {}
     }
     reset() {                                              // stop/seek: cancel pending hits + silence everything
       this.timers.forEach(clearTimeout); this.timers.clear();
@@ -204,6 +215,7 @@ const PiSound = (function () {
   function stopTimer() { if (schedTimer) { clearInterval(schedTimer); schedTimer = null; } }
 
   sndRow.hidden = false; muteRow.hidden = false; if (sndQualRow) sndQualRow.hidden = false;
+  { const r = $('kitSndRow'); if (r) r.hidden = false; }      // "play my kit here" (app.js owns the setting)
   // Local sound has two entry points now: the Settings toggle (sndHere) and the corner button(s)
   // (.sndtop). Both drive ONE state through setSound(); reflect() keeps every control in sync.
   const sndTops = Array.from(document.querySelectorAll('.sndtop'));
@@ -250,7 +262,7 @@ const PiSound = (function () {
   return {
     init(c) { Object.assign(ctx, c); },
     resync,                                             // re-aim after seek/loop/song change
-    live: (note, on, vel) => { if (soundOn && engine) engine.live(note, on, vel); },   // your pressed keys
+    live: (note, on, vel, drum) => { if (soundOn && engine) engine.live(note, on, vel, drum); },   // your pressed keys / struck pads
     onPlay: (playing) => { if (soundOn) playing ? startTimer() : stopTimer(); },        // scheduler runs only while playing
     heartbeat: (t) => { const back = t < lastT - 0.3; lastT = t; if (back) resync(); }, // backward jump -> re-aim
     setPiMute,

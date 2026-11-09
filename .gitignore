@@ -33,3 +33,6 @@ webpiano/certs/
 
 # WebAudioFont samples (~12 MB) live on the Pi; regenerate with pi/fetch-waf.sh
 webpiano/web/waf/
+
+# performance probe reports (written by server.py on request)
+webpiano/perf.log

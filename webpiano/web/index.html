@@ -500,6 +500,12 @@
         <div class="card">
           <h3>Sound</h3>
           <div class="field" id="sndRow" hidden><span class="lab">Play sound on this device</span><button id="sndHere" class="btn">Off</button></div>
+          <div class="field" id="kitSndRow" hidden><span class="lab">Play my drum kit's hits on this device</span>
+            <select id="kitSndSel" title="Off: you hear the kit through its own module (e.g. headphones). On: this device also plays a drum sound per hit">
+              <option value="off">Off &mdash; the kit makes its own sound</option>
+              <option value="on">On</option>
+            </select>
+          </div>
           <div class="field" id="sndQualRow" hidden><span class="lab">Sound quality</span>
             <select id="sndQual" title="FluidSynth = a real synth + soundfont (best, esp. drums); Rich = sampled instruments; Light = simplest">
               <option value="fluid">FluidSynth &mdash; best (real synth + soundfont)</option>

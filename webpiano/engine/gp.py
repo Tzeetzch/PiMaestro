@@ -12,8 +12,10 @@ of its own — staff/accidental/name/symbol all come from notation.py, same as M
 """
 from __future__ import annotations
 
-import re
+import collections
 import os
+import re
+import threading
 
 import guitarpro
 
@@ -43,6 +45,30 @@ def _key_of(track0):
         return 0
 
 
+_PARSED = collections.OrderedDict()     # (path, mtime, size) -> parsed song, most recent last
+_PARSED_MAX = 4
+_PARSED_LOCK = threading.Lock()
+
+
+def _parse_cached(path):
+    """guitarpro.parse is pure Python and is ~75% of a load (~0.6 s of 0.8 s on the Pi); the same song
+    is rebuilt on every octave/part/split change and re-pick, so keep the last few parsed songs.
+    Keyed by mtime+size, so an edited/replaced file is re-read. Safe to share: the builder only reads
+    the parse, except _fit_channels, which is idempotent (a second pass finds nothing out of range)."""
+    st = os.stat(path)
+    key = (os.path.abspath(path), st.st_mtime_ns, st.st_size)
+    with _PARSED_LOCK:
+        if key in _PARSED:
+            _PARSED.move_to_end(key)
+            return _PARSED[key]
+    song = guitarpro.parse(path)
+    with _PARSED_LOCK:
+        _PARSED[key] = song
+        while len(_PARSED) > _PARSED_MAX:
+            _PARSED.popitem(last=False)
+    return song
+
+
 def _fit_channels(tracks):
     """A synth has 16 MIDI channels (0..15, 9 = drums), but Guitar Pro / Songsterr files number tracks
     in pairs (0, 2, 4 ... 26), so a band file with 9+ instruments puts e.g. the bass on channel 16 —
@@ -69,7 +95,7 @@ def build_view_model(path, transpose=0, kbd_lo=None, kbd_hi=None, split=MIDDLE_C
         split = max(21, min(108, int(split)))
     except (TypeError, ValueError):
         split = MIDDLE_C
-    s = guitarpro.parse(path)
+    s = _parse_cached(path)
     tracks = s.tracks or []
     _fit_channels(tracks)
     title =s.title or os.path.splitext(os.path.basename(path))[0].replace("_", " ")

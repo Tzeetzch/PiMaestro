@@ -151,6 +151,7 @@
       hand: PiSetup.handValue(), play: PiSession.play.slice(), speed: speedSel.value,
       transpose: transSel.value, mode: modeSel.value, split: splitSel.value,
       mix: JSON.parse(JSON.stringify(trackMix)),
+      loop: PiTransport.getLoop(),                 // the A/B practice loop comes back with the song
     };
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { control({ cmd: 'save_settings', file: file, settings: settings }).catch(() => {}); }, 350);
@@ -296,7 +297,8 @@
       if (keep) { setPlayChannels(PiSession.play, PiSession.hand, PiSession.trk); }
       else { PiSetup.buildPartOptions(vm); applyParts(); }
       showTranspose(vm.transpose || 0);
-      PiTransport.clearLoop();                   // bar counts differ between songs
+      if (keep) PiTransport.restoreLoop(PiTransport.getLoop());   // same song re-built (octave/split): keep the loop
+      else PiTransport.clearLoop();              // bar counts differ between songs
       if (view === 'setup') { PiSetup.buildInstr(); PiTransport.buildLoop(); }   // refresh Setup for the new song
       const shift = vm.transpose || 0;
       const stag = shift ? ' · ' + (shift > 0 ? '+' : '') + (shift / 12) + ' oct' : '';
@@ -333,6 +335,7 @@
     PiTV.setFreezeMode(mode === 'follow');
     const ok = await loadSong(file, false, my);         // builds vm with that transpose/range (same token)
     if (my !== loadSeq) { release(); return; }          // superseded while loading
+    if (ok && has && s.loop) PiTransport.restoreLoop(s.loop);   // your practice loop for this song (while still restoring: no re-save)
     release();
     if (!ok) return;
     if (has && s.hand) PiSetup.setHand(s.hand);         // best-effort dropdown label
@@ -527,7 +530,7 @@
     getView: () => view, getPlaying: () => playing, getVM: () => PiSession.vm, getLastT: () => lastT,
     control, go, openPause,
   });
-  PiTransport.init({ getVM: () => PiSession.vm, control, showLoop: (a, b) => PiTV.setLoop(a, b) });   // click-to-seek + loop drilling
+  PiTransport.init({ getVM: () => PiSession.vm, control, showLoop: (a, b) => PiTV.setLoop(a, b), onLoopChange: () => saveCurrent() });   // click-to-seek + loop drilling
   // A slider drag fires dozens of input events; each was a POST + FluidSynth CC + a pos to every client.
   const volTimers = {}, volLast = {};
   function throttledVolume(body) {
@@ -603,6 +606,14 @@
   let lastKitNav = 0;   // debounce: a hard hit can double-strike (or send head+rim) -> don't jump the menu twice
   // Settings > Controls: the kit steering menus is OFF by default (warming up on the pads would wander
   // the menus). Per device — the TV decides for itself.
+  let kitSnd = false;                                   // also sound your kit hits here (default off: the kit has its own module)
+  try { kitSnd = localStorage.getItem('pimaestro.kitSound') === 'on'; } catch (e) {}
+  const kitSndSel = $('kitSndSel');
+  if (kitSndSel) {
+    kitSndSel.value = kitSnd ? 'on' : 'off';
+    kitSndSel.onchange = () => { kitSnd = kitSndSel.value === 'on'; try { localStorage.setItem('pimaestro.kitSound', kitSndSel.value); } catch (e) {} };
+  }
+  const liveSound = () => PiSession.instrument !== 'drums' || kitSnd;
   let kitNav = false;
   try { kitNav = localStorage.getItem('pimaestro.kitNav') === 'on'; } catch (e) {}
   const kitNavSel = $('kitNavSel');
@@ -615,12 +626,16 @@
     pos: onPos, hello: onPos,
     devices: updateDevices,                                // attached controllers changed -> update the home dots live
     reload: () => location.reload(),                       // server pushed new app code -> refresh (e.g. the TV kiosk)
+    perfprobe: m => {                                      // server asked: measure our drawing for a few seconds, report back
+      PiTV.measure(m.secs || 8).then(r => control(Object.assign({ cmd: 'perfreport', ua: navigator.userAgent.slice(0, 120),
+        screen: screen.width + 'x' + screen.height + '@' + devicePixelRatio, secs: m.secs }, r)).catch(() => {}));
+    },
     key: m => { PiNav.setKbd(true); document.dispatchEvent(new KeyboardEvent('keydown', { key: m.key, bubbles: true, cancelable: true })); },
     gate: m => PiTV.clearGateUpto(m.gi),                   // freeze cursor cleared -> local clock resumes here
     rating: m => { flashRating(m.kind, m.off, m.note); if (m.gate != null) PiTV.setRated(m.gate, m.kind); },
     gates: m => PiTV.setGates(m.gates),                    // gate set changed (load / part / range / mode)
     noteon: m => {
-      PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true); PiSound.live(m.note, true, m.velocity);
+      PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true); if (liveSound()) PiSound.live(m.note, true, m.velocity, PiSession.instrument === 'drums');   // kit: only if Settings says so
       if (kitNav && !playing && KIT_KEY[m.note]) {        // kit as a remote — only if enabled (Settings), never in a game
         const t = performance.now();
         if (t - lastKitNav < 130) return;                 // debounce double-strikes so nav doesn't jump twice
@@ -629,7 +644,7 @@
         document.dispatchEvent(new KeyboardEvent('keydown', { key: KIT_KEY[m.note], bubbles: true, cancelable: true }));
       }
     },
-    noteoff: m => { PiTV.highlight(m.note, false); PiTV.setPlayed(m.note, false); PiSound.live(m.note, false); },
+    noteoff: m => { PiTV.highlight(m.note, false); PiTV.setPlayed(m.note, false); if (liveSound()) PiSound.live(m.note, false, 0, PiSession.instrument === 'drums'); },
   });
 
   // The catalogue holds the data; the selector (PiLib) is a pure view of it. The app wires them:

@@ -804,6 +804,39 @@ const PiTV = (function () {
   // it back toward full. A 9–15ms dead-zone keeps it from oscillating. The clock advances every rAF,
   // so timing is exact regardless of resolution.
   let drawMs = 0, slew = 0;
+  // Performance probe (server-triggered, see app.js 'perfprobe'): record every frame interval + draw
+  // cost for a few seconds, then summarise. Off unless asked, so it costs nothing normally.
+  let probe = null;
+  function measure(secs) {
+    return new Promise(done => {
+      probe = { until: performance.now() + secs * 1000, gaps: [], draws: [], prev: null, done, loaf: [], obs: null, slowAt: [] };
+      // Long Animation Frames: Chromium names the scripts that held up a slow frame (what, where, how long).
+      try {
+        const p = probe;
+        p.obs = new PerformanceObserver(list => list.getEntries().forEach(e => p.loaf.push({
+          at: Math.round(e.startTime), dur: Math.round(e.duration), block: Math.round(e.blockingDuration || 0),
+          render: Math.round((e.renderStart ? e.startTime + e.duration - e.renderStart : 0)),
+          style: Math.round(e.styleAndLayoutStart ? e.startTime + e.duration - e.styleAndLayoutStart : 0),
+          scripts: (e.scripts || []).map(s => ({ dur: Math.round(s.duration), inv: (s.invoker || '').slice(0, 60),
+            src: (s.sourceURL || '').split('/').pop() + ':' + (s.sourceFunctionName || '') + '@' + (s.sourceCharPosition ?? '') })) })));
+        p.obs.observe({ type: 'long-animation-frame', buffered: false });
+      } catch (e) {}
+    });
+  }
+  const heapMB = () => (performance.memory ? +(performance.memory.usedJSHeapSize / 1048576).toFixed(1) : -1);
+  function finishProbe() {
+    const p = probe; probe = null;
+    try { p.obs && p.obs.disconnect(); } catch (e) {}
+    const q = (a, f) => { if (!a.length) return 0; const s = a.slice().sort((x, y) => x - y); return +s[Math.min(s.length - 1, Math.floor(f * s.length))].toFixed(1); };
+    const span = p.gaps.reduce((a, b) => a + b, 0);
+    p.done({ frames: p.gaps.length, fps: span ? +(p.gaps.length * 1000 / span).toFixed(1) : 0,
+             p50: q(p.gaps, .5), p95: q(p.gaps, .95), p99: q(p.gaps, .99), worst: q(p.gaps, 1),
+             long: p.gaps.filter(g => g > 25).length,                // frames that took > 1.5 x a 60 Hz frame
+             drawAvg: p.draws.length ? +(p.draws.reduce((a, b) => a + b, 0) / p.draws.length).toFixed(2) : 0, drawP95: q(p.draws, .95),
+             res: canvas ? canvas.width + 'x' + canvas.height : '', view, drums: drumMode, playing: clockPlaying,
+             loaf: p.loaf.sort((a, b) => b.dur - a.dur).slice(0, 6),
+             gapsOver25: p.slowAt, heapEnd: heapMB(), heapLimit: performance.memory ? Math.round(performance.memory.jsHeapSizeLimit / 1048576) : -1 });   // [frame ms, song time (s), page time (ms)] for each slow frame
+  }
   function frame(ts) {
     requestAnimationFrame(frame);
     if (clockOn && clockPlaying) {                 // R.4: advance the local clock, freezing at gates
@@ -816,9 +849,16 @@ const PiTV = (function () {
       lastTs = ts;
     } else lastTs = null;
     if (clockOn) refreshWantedLocal();
-    if (ctx && dirty) { const t0 = performance.now(); draw(); dirty = false; drawMs += ((performance.now() - t0) - drawMs) * 0.1; }   // render at native res; track draw cost
+    let dms = -1;
+    if (ctx && dirty) { const t0 = performance.now(); draw(); dirty = false; dms = performance.now() - t0; drawMs += (dms - drawMs) * 0.1; }   // render at native res; track draw cost
+    if (probe) {
+      if (probe.prev != null) { probe.gaps.push(ts - probe.prev); if (ts - probe.prev > 25) probe.slowAt.push([Math.round(ts - probe.prev), +now.toFixed(2), Math.round(ts), heapMB(), probe.lastHeap]); }
+      if (probe.gaps.length % 30 === 0) probe.lastHeap = heapMB();   // heap ~2x/s, to see a drop across a stall
+      probe.prev = ts; if (dms >= 0) probe.draws.push(dms);
+      if (ts >= probe.until) finishProbe();
+    }
   }
 
   return { buildKeyboard, highlight, flashWrong, attachCanvas, setSong, setPlayed, setView, setPlay, setRange, setLoop, setNames,
-           enableClock, setClock, setGates, clearGateUpto, setRated, setFreezeMode, correctNow, clockState, setNoteScale };
+           enableClock, setClock, setGates, clearGateUpto, setRated, setFreezeMode, correctNow, clockState, setNoteScale, measure };
 })();
