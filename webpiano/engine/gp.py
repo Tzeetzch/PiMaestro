@@ -12,6 +12,7 @@ of its own — staff/accidental/name/symbol all come from notation.py, same as M
 """
 from __future__ import annotations
 
+import re
 import os
 
 import guitarpro
@@ -42,6 +43,27 @@ def _key_of(track0):
         return 0
 
 
+def _fit_channels(tracks):
+    """A synth has 16 MIDI channels (0..15, 9 = drums), but Guitar Pro / Songsterr files number tracks
+    in pairs (0, 2, 4 ... 26), so a band file with 9+ instruments puts e.g. the bass on channel 16 —
+    which FluidSynth can't play: that part was SILENT. Move only the out-of-range tracks onto free
+    channels; a song that already fits keeps its numbering (saved per-song settings are keyed by it).
+    More than 15 melodic tracks: share a channel with a track of the same instrument, else the last."""
+    used = {t.channel.channel for t in tracks if t.channel.channel <= 15}
+    free = [c for c in range(16) if c != 9 and c not in used]
+    prog_ch = {}
+    for t in tracks:
+        if t.channel.channel <= 15 and not t.isPercussionTrack:
+            prog_ch.setdefault(t.channel.instrument, t.channel.channel)
+    for t in tracks:
+        if t.isPercussionTrack:
+            t.channel.channel = 9
+        elif t.channel.channel > 15:
+            ch = free.pop(0) if free else prog_ch.get(t.channel.instrument, 15)
+            t.channel.channel = ch
+            prog_ch.setdefault(t.channel.instrument, ch)
+
+
 def build_view_model(path, transpose=0, kbd_lo=None, kbd_hi=None, split=MIDDLE_C) -> dict:
     try:
         split = max(21, min(108, int(split)))
@@ -49,7 +71,8 @@ def build_view_model(path, transpose=0, kbd_lo=None, kbd_hi=None, split=MIDDLE_C
         split = MIDDLE_C
     s = guitarpro.parse(path)
     tracks = s.tracks or []
-    title = s.title or os.path.splitext(os.path.basename(path))[0].replace("_", " ")
+    _fit_channels(tracks)
+    title =s.title or os.path.splitext(os.path.basename(path))[0].replace("_", " ")
     key = _key_of(tracks[0]) if tracks else 0
     nmeas = len(tracks[0].measures) if tracks else 0
 
@@ -152,6 +175,8 @@ def build_view_model(path, transpose=0, kbd_lo=None, kbd_hi=None, split=MIDDLE_C
         for j in range(num):
             beats.append(round(starts[mi] + j * beatsec, 3))
 
+    mix_default = _default_mix(tracks, parts)
+
     return {
         "title": title,
         "transpose": shift,
@@ -163,6 +188,7 @@ def build_view_model(path, transpose=0, kbd_lo=None, kbd_hi=None, split=MIDDLE_C
         "programs": programs,
         "parts": parts,
         "drumTracks": drum_tracks,
+        "mixDefault": mix_default,
         "rightChan": None,
         "leftChan": None,
         "bars": bars,
@@ -170,3 +196,42 @@ def build_view_model(path, transpose=0, kbd_lo=None, kbd_hi=None, split=MIDDLE_C
         "notes": notes,
         "chords": _group_chords(notes),
     }
+
+
+_VOCAL_RE = re.compile(r"\b(vocals?|vox|voices?|singer|sings?|singing|choir|lyrics?)\b")
+
+
+def _default_mix(tracks, parts):
+    """A starting balance per channel (CC7, 0..127; 100 = the untouched default). Songsterr/Guitar Pro
+    files carry no real mix — every track is at full volume — so a band arrangement plays as a wall of
+    equal parts: the vocal line (a synth "voice") sits on top and doubled guitars bury the bass. This
+    only sets defaults; anything the player changes in the Instruments panel wins (and is saved).
+    Rules: vocals well back, bass and drums full, guitars down (more when several big guitar parts
+    double each other; distorted GM guitars are much louder in the soundfont), the rest a bit back."""
+    names = {}
+    for t in tracks:
+        names.setdefault(t.channel.channel, []).append((t.name or "").lower())
+    count = {p["ch"]: p["count"] for p in parts}
+    guitars = [p["ch"] for p in parts if p["ch"] != 9 and 24 <= p["program"] <= 31]
+    big = max((count[c] for c in guitars), default=0)
+    main_guitars = [c for c in guitars if count[c] >= 0.25 * big]     # solos/overdubs don't stack all song
+    g_scale = max(0.7, (1 / len(main_guitars)) ** 0.5) if main_guitars else 1.0
+    mix = {}
+    for p in parts:
+        ch, prog, nm = p["ch"], p["program"], " ".join(names.get(p["ch"], []))
+        # instrument FIRST (a "Vox" amp guitar is a guitar), then whole-word name match for vocals
+        # (substring matching hit e.g. "Ros-sing-ton"): Songsterr exports vocals as sax/lead programs.
+        if ch == 9:
+            vol = 100
+        elif 24 <= prog <= 31:
+            vol = (80 if prog in (29, 30) else 90) * (g_scale if ch in main_guitars else 0.85)
+        elif 32 <= prog <= 39:
+            vol = 110
+        elif _VOCAL_RE.search(nm) or prog in (52, 53, 54, 85):
+            vol = 35 if "backing" in nm else 45
+        elif re.search(r"\bbass\b", nm):
+            vol = 110
+        else:
+            vol = 80
+        mix[ch] = {"volume": int(round(vol))}
+    return mix

@@ -224,6 +224,9 @@ const PiSound = (function () {
       if (ctx.getClock().playing) startTimer();        // idle? don't burn CPU — armed on next Play
     } else {
       soundOn = false; stopTimer(); if (engine) engine.reset();
+      // Suspend the audio graph too: the Fluid engine's ScriptProcessor (and TinySynth's timer-driven
+      // graph) otherwise keep rendering silence on the main thread forever. ensure() resumes it.
+      if (audioCtx && audioCtx.state === 'running') setTimeout(() => { if (!soundOn) audioCtx.suspend().catch(() => {}); }, 300);
     }
     reflect();
   }

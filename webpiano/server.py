@@ -503,9 +503,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             clients.append(q)
         try:
             # resync this client immediately: current song + play position + attached devices
-            snap = conductor.snapshot()
+            snap, vm_json = conductor.snapshot_parts()   # song JSON is cached: splice, don't re-encode MBs
             snap["devices"] = REGISTRY.state()       # so a fresh TV shows the right status dots without waiting for a change
-            self.wfile.write(f"data: {json.dumps(snap)}\n\n".encode())
+            self.wfile.write(("data: " + json.dumps(snap)[:-1] + ', "vm": ' + vm_json + "}\n\n").encode())
             self.wfile.flush()
             while True:
                 try:

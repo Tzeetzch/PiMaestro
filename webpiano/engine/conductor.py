@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import queue
 import socket
+import bisect
+import json
 import threading
 import time
 
@@ -86,18 +88,34 @@ class _Synth:
 
     def _worker(self):
         while True:
-            cmd = self._q.get()
+            cmds = [self._q.get()]
+            while True:                # drain whatever queued meanwhile (a chord, all_off) -> ONE write
+                try:
+                    cmds.append(self._q.get_nowait())
+                except queue.Empty:
+                    break
             if self._sock is None:
                 try:
                     self._sock = socket.create_connection(self._addr, timeout=1)
+                    # no Nagle: FluidSynth never replies to noteon, so small writes could otherwise
+                    # sit waiting on a delayed ACK (tens of ms) -> late / flammed backing notes
+                    self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                     self._replay_state(self._sock)   # restore gain/router/progs/vols on (re)connect
                 except OSError:
                     self._sock = None
-                    continue           # FluidSynth unreachable; drop this cmd, try the next
+                    continue           # FluidSynth unreachable; drop these cmds, try the next
             try:
-                self._sock.sendall((cmd + "\n").encode())
+                self._sock.sendall(("\n".join(cmds) + "\n").encode())
             except OSError:
                 self._sock = None      # dropped; reconnect (and replay) on the next command
+
+    def reset_vols(self):
+        """Put every channel volume this session changed back to the GM default, so one song's
+        Instruments mix can't leak into the next song."""
+        with self._cache_lock:
+            chans, self._vols = list(self._vols), {}
+        for ch in chans:
+            self._send(f"cc {ch} 7 100")
 
     def noteon(self, ch, key, vel):
         self._send(f"noteon {ch} {key} {vel}")
@@ -142,6 +160,10 @@ class Conductor:
         self._gen = 0                    # play-thread generation (guards against doubles)
 
         self._vm = None
+        self._vm_json = None             # the VM serialised once (hello frames embed it; songs are MBs)
+        self._note_ts = []               # note start times (sorted), for windowed lookups
+        self._wake = threading.Event()   # wakes the play thread early (a key press may clear a gate)
+        self._last_pos = 0.0             # when the play thread last broadcast a routine pos heartbeat
         self._file = None                # current song path (so reconnecting clients can resync)
         self._notes = []
         self._duration = 0.0
@@ -186,6 +208,7 @@ class Conductor:
             self._vm = vm
             self._file = file
             self._notes = vm.get("notes", [])
+            self._note_ts = [n["t"] for n in self._notes]        # notes are sorted by t (song.py)
             self._duration = vm.get("duration", 0.0)
             self._trk = None                                   # drum-track pick is re-chosen per song
             if play is not None:
@@ -193,9 +216,11 @@ class Conductor:
             else:                                              # default: both detected hands
                 self._play = set(c for c in (vm.get("rightChan"), vm.get("leftChan")) if c is not None)
             self._muted = set()
+            self._synth.reset_vols()                           # a new song starts at full volume (its mix re-applies)
             self._ensure_drum_trk()
             self._rebuild_gates()
             vm["gates"] = [round(t, 3) for t, _ in self._gates]   # ship gates IN the load response (no SSE race)
+            self._vm_json = None                               # re-serialise lazily on the next hello
             self._reset_position()
             self._playing = False
             # SOUND at the song's ORIGINAL pitch even when the notes are shown shifted to fit
@@ -367,8 +392,10 @@ class Conductor:
                             for p in wanted:
                                 if DRUM_ZONE.get(p) == z:
                                     self._satisfied[p] = now
+                                    self._wake.set()        # the gate may be met: resume NOW, not at the next tick
                 elif near and pitch in wanted:
                     self._satisfied[pitch] = now            # timestamp -> chord-together check
+                    self._wake.set()                        # the gate may be met: resume NOW, not at the next tick
                 elif (near and self._mode == "follow" and self._lo <= pitch <= self._hi
                       and not self._sounds_near(pitch)):
                     # a key with NO note anywhere in the music around now — not yours, not the backing,
@@ -420,8 +447,11 @@ class Conductor:
         """Does `pitch` occur ANYWHERE in the song near the playhead (any part)? Used so the backing,
         the other hand, and reading a hair ahead are never mistaken for a wrong note."""
         lo, hi = self._t - 0.3, self._t + 0.5
-        for n in self._notes:
-            if n["n"] == pitch and lo <= n["t"] <= hi:
+        ns = self._notes
+        for i in range(bisect.bisect_left(self._note_ts, lo), len(ns)):   # only the window, not the whole song
+            if ns[i]["t"] > hi:
+                break
+            if ns[i]["n"] == pitch:
                 return True
         return False
 
@@ -450,6 +480,11 @@ class Conductor:
             reachable = ch != 9 and self._lo <= n["n"] <= self._hi   # on your keyboard?
             mine = (reachable and self._mode != "listen" and ch in self._play
                     and (self._hand is None or n.get("hand") == self._hand))
+            # Playing DRUMS: the kit is yours — your own pads sound (the kit feeds FluidSynth live), so the
+            # song's kit notes are NOT doubled as backing. Aux percussion (tambourine, shaker...: 'bg')
+            # has no pad, so it keeps playing with the band.
+            if ch == 9 and 9 in self._play and self._mode != "listen" and not n.get("bg"):
+                mine = True
             if mine:
                 continue                                   # you provide it; the rest auto-plays
             auto.append((n["t"], n["t"] + n["d"], ch, n["n"], n.get("v") or AUTO_VEL))
@@ -578,13 +613,13 @@ class Conductor:
             gates = [round(t, 3) for t, _ in self._gates]
         self._on_state({"type": "gates", "gates": gates})
 
-    def snapshot(self):
-        """Full current state for a just-connected client: the loaded song + play position,
-        so a fresh/reconnected browser (e.g. the TV) renders the song instead of a blank stage."""
+    def snapshot_parts(self):
+        """The hello frame for a just-connected client WITHOUT the song, plus the song as cached JSON
+        text. The server splices them, so a (re)connect (e.g. the TV) never re-encodes a multi-MB song
+        while holding the lock — that used to stall playback."""
         with self._lock:
             frame = self._state_locked()
             frame["type"] = "hello"
-            frame["vm"] = self._vm
             frame["file"] = self._file
             frame["play"] = sorted(self._play)       # authoritative part/hand/mode/speed so a
             frame["hand"] = self._hand               # reconnecting or 2nd client matches the engine
@@ -593,12 +628,27 @@ class Conductor:
             frame["speed"] = self._speed
             frame["pi_muted"] = self._pi_muted       # so a reconnect/2nd client shows the real mute state
             frame["gates"] = [round(t, 3) for t, _ in self._gates]   # where Follow-You freezes (R.4)
-            return frame
+            if self._vm_json is None:
+                self._vm_json = json.dumps(self._vm)
+            return frame, self._vm_json
+
+    def snapshot(self):
+        """Full current state for a just-connected client: the loaded song + play position."""
+        frame, vm_json = self.snapshot_parts()
+        frame["vm"] = json.loads(vm_json)
+        return frame
 
     def _run(self, gen):
         last = time.monotonic()
         while True:
-            time.sleep(TICK)
+            # Sleep until the next tick, the next backing note, or a key press (on_note sets _wake) —
+            # whichever is first, so backing and the resume after a gate aren't snapped to a 25ms grid.
+            timeout = TICK
+            with self._lock:
+                if self._auto_i < len(self._auto) and self._speed > 0:
+                    timeout = min(TICK, max(0.002, (self._auto[self._auto_i][0] - self._t) / self._speed))
+            self._wake.wait(timeout)
+            self._wake.clear()
             now = time.monotonic()
             dt = now - last
             last = now
@@ -633,4 +683,9 @@ class Conductor:
                     frame["ended"] = True
                 if looped:
                     frame["seek"] = True       # backward jump on loop wrap: don't let the throttle drop it
+                # Clients run their own clock and only want a ~4 Hz heartbeat: drop routine frames HERE
+                # rather than building/broadcasting 40/s for every SSE thread to parse and discard.
+                if not (ended or looped) and now - self._last_pos < 0.24:
+                    continue
+                self._last_pos = now
             self._on_state(frame)

@@ -120,10 +120,17 @@
   let split = 60;                               // left/right hand + treble/bass split pitch (middle C)
   let restoring = false, restoreSeq = 0;        // suppress auto-save while applying saved settings (restoreSeq = the load that owns the flag)
   let trackMix = {};                            // this song's Instruments-panel mix: ch -> {mute, volume, program} (saved per song)
+  // What a channel actually plays at: the song's suggested balance (vm.mixDefault — Songsterr files
+  // carry none, so the engine derives one), overridden by anything you set yourself (trackMix, saved).
+  function effMix(ch) {
+    const d = (PiSession.vm && PiSession.vm.mixDefault || {})[ch], u = trackMix[ch];
+    return (d || u) ? Object.assign({}, d, u) : undefined;
+  }
+  function mixChannels() { return [...new Set(Object.keys((PiSession.vm && PiSession.vm.mixDefault) || {}).concat(Object.keys(trackMix)))]; }
   function applyMix() {                         // push the mix to the Pi's synth + the local speaker (the engine resets mutes on load)
     PiSound.clearParts();
-    Object.keys(trackMix).forEach(ch => {
-      const m = trackMix[ch];
+    mixChannels().forEach(ch => {
+      const m = effMix(ch);
       PiSound.setPart(+ch, m);
       control(Object.assign({ cmd: 'part', ch: +ch }, m)).catch(() => {});
     });
@@ -252,11 +259,12 @@
     if (typeof m.pi_muted === 'boolean') PiSound.setPiMute(m.pi_muted);   // reflect the engine's real mute state
     PiSetup.updateModeHint(mode);
     trackMix = {}; PiSound.clearParts();                 // the adopted song's saved mix (the Pi already applied it)
+    mixChannels().forEach(ch => PiSound.setPart(+ch, effMix(ch)));   // the song's default balance, until the saved mix arrives
     const f = PiSession.file;
     if (f) fetch('/settings?file=' + encodeURIComponent(f)).then(r => r.json()).then(s => {
       if (PiSession.file !== f || !s || !s.mix || typeof s.mix !== 'object') return;
       trackMix = s.mix;
-      Object.keys(trackMix).forEach(ch => PiSound.setPart(+ch, trackMix[ch]));
+      mixChannels().forEach(ch => PiSound.setPart(+ch, effMix(ch)));
       if (view === 'setup') PiSetup.buildInstr();
     }).catch(() => {});
   }
@@ -275,13 +283,14 @@
   // the current song (after a transpose/keyboard change) WITHOUT resetting the chosen parts.
   async function loadSong(file, keep, token) {
     if (token == null) token = ++loadSeq;        // standalone call (e.g. a select onchange) gets its own token
+    pendingFile = file;                          // our own load's pos may arrive before the reply: not "stale"
     try {
       const [lo, hi] = kbdRange();
       const body = { cmd: 'load', file: file, transpose: transpose, lo: lo, hi: hi, split: split };
       if (keep) body.play = PiSession.play;
       const vm = await control(body);
       if (token !== loadSeq) return false;        // a newer load started while we awaited — drop this one
-      PiSession.file = file;
+      PiSession.file = file; pendingFile = null;
       PiSession.vm = vm;
       PiTV.setSong(vm);
       if (keep) { setPlayChannels(PiSession.play, PiSession.hand, PiSession.trk); }
@@ -297,7 +306,7 @@
       return true;
     } catch (e) {
       songLabel.textContent = 'could not load song';
-      PiSession.file = null;
+      PiSession.file = null; pendingFile = null;
       return false;
     }
   }
@@ -422,6 +431,7 @@
      below; we drive it via PiSound.resync / live / onPlay / heartbeat / setPiMute. ---- */
   function isMine(nt) {                                 // notes YOU play live -> not scheduled as backing
     if (mode === 'listen' || !PiSession.play.includes(nt.ch)) return false;
+    if (nt.ch === 9) return !nt.bg;                      // your kit; aux percussion (no pad) stays in the band
     if (PiSession.hand && nt.hand !== PiSession.hand) return false;
     const [lo, hi] = kbdRange(); return nt.n >= lo && nt.n <= hi;
   }
@@ -518,15 +528,25 @@
     control, go, openPause,
   });
   PiTransport.init({ getVM: () => PiSession.vm, control, showLoop: (a, b) => PiTV.setLoop(a, b) });   // click-to-seek + loop drilling
+  // A slider drag fires dozens of input events; each was a POST + FluidSynth CC + a pos to every client.
+  const volTimers = {}, volLast = {};
+  function throttledVolume(body) {
+    const ch = body.ch, now = Date.now();
+    clearTimeout(volTimers[ch]);
+    if (now - (volLast[ch] || 0) >= 100) { volLast[ch] = now; return control(body); }
+    volTimers[ch] = setTimeout(() => { volLast[ch] = Date.now(); control(body).catch(() => {}); }, 100);
+    return Promise.resolve();
+  }
   PiSetup.init({                                           // the Setup screen: part dropdown + instruments + hero
     getVM: () => PiSession.vm, getPlay: () => PiSession.play, getSelFile: () => selFile,
-    getMix: (ch) => trackMix[ch],
+    getMix: (ch) => effMix(ch),
     control: (body) => {                                   // track mute/volume/instrument -> the Pi AND the local speaker, saved per song
       if (body && body.cmd === 'part') {
         const m = trackMix[body.ch] || (trackMix[body.ch] = {});
         ['mute', 'volume', 'program'].forEach(k => { if (body[k] != null) m[k] = body[k]; });
         PiSound.setPart(body.ch, body);
         saveCurrent();
+        if (body.volume != null && body.mute == null && body.program == null) return throttledVolume(body);
       }
       return control(body);
     },
@@ -537,7 +557,7 @@
 
   /* ---- SSE: live keyboard notes + streamed play-position. The transport (connect/reconnect/parse)
      lives in sse.js (PiSse); what follows is just the handlers — what each message DOES. ---- */
-  let lastTallyKey = '';
+  let lastTallyKey = '', skipFile = null, pendingFile = null;
   // The pos/hello heartbeat is the one heavy arm — keep it in a named function; the rest are a map.
   function onPos(m) {
     // Only ADOPT the Pi's song on connect when it's actually PLAYING (a real reconnect / a 2nd
@@ -550,8 +570,13 @@
       } else if (m.vm && !PiSession.vm) {
         adoptHello(m); setPlayBtn(!!m.playing);          // loaded-but-paused: adopt model, stay on Home
       }
-    } else if (m.file && PiSession.file && m.file !== PiSession.file) {
-      PiSse.reconnect(); return;                           // stale view: reconnect for a clean hello snapshot
+      skipFile = (m.file && m.file !== PiSession.file) ? m.file : null;   // seen + deliberately not adopted
+    } else if (m.file && PiSession.file && m.file !== PiSession.file && m.file !== pendingFile
+               && (m.playing || m.file !== skipFile)) {
+      // Stale view (another device switched songs): reconnect for a clean hello snapshot. But NOT for a
+      // song we already saw idle and chose not to adopt (that looped: every pos -> reconnect -> full
+      // song re-sent), and not for our OWN load whose pos can beat the /control reply.
+      PiSse.reconnect(); return;
     }
     lastT = m.t;                                           // local clock: pos is just a correction heartbeat
     if (m.gates) PiTV.setGates(m.gates);                   // hello carries gates
@@ -576,6 +601,15 @@
                     43: 'ArrowLeft', 58: 'ArrowLeft', 41: 'ArrowRight', 39: 'ArrowRight',
                     38: 'Enter', 40: 'Enter', 36: 'Escape', 35: 'Escape' };   // T1↑ T2↓ T3← T4→ snare=OK kick=Back
   let lastKitNav = 0;   // debounce: a hard hit can double-strike (or send head+rim) -> don't jump the menu twice
+  // Settings > Controls: the kit steering menus is OFF by default (warming up on the pads would wander
+  // the menus). Per device — the TV decides for itself.
+  let kitNav = false;
+  try { kitNav = localStorage.getItem('pimaestro.kitNav') === 'on'; } catch (e) {}
+  const kitNavSel = $('kitNavSel');
+  if (kitNavSel) {
+    kitNavSel.value = kitNav ? 'on' : 'off';
+    kitNavSel.onchange = () => { kitNav = kitNavSel.value === 'on'; try { localStorage.setItem('pimaestro.kitNav', kitNavSel.value); } catch (e) {} };
+  }
   // SSE protocol -> handler map (was a 7-way if/else on m.type)
   PiSse.start({
     pos: onPos, hello: onPos,
@@ -587,7 +621,7 @@
     gates: m => PiTV.setGates(m.gates),                    // gate set changed (load / part / range / mode)
     noteon: m => {
       PiTV.highlight(m.note, true); PiTV.setPlayed(m.note, true); PiSound.live(m.note, true, m.velocity);
-      if (!playing && KIT_KEY[m.note]) {                  // kit as a remote — ONLY when not in a game
+      if (kitNav && !playing && KIT_KEY[m.note]) {        // kit as a remote — only if enabled (Settings), never in a game
         const t = performance.now();
         if (t - lastKitNav < 130) return;                 // debounce double-strikes so nav doesn't jump twice
         lastKitNav = t;

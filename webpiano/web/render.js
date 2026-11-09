@@ -262,7 +262,8 @@ const PiTV = (function () {
     // The local rAF clock is accurate; the heartbeat arrives with network jitter, so don't chase small
     // diffs (free-run within a dead-zone) — only gently correct genuine drift. Seeks/pauses snap above.
     const d = t - now;
-    if (Math.abs(d) > 0.12) now += d * 0.10;
+    // Slew the clock RATE toward the server instead of stepping `now` (steps read as a 4 Hz hitch).
+    if (Math.abs(d) > 0.12) slew = Math.max(-0.08, Math.min(0.08, d * 0.5));
     dirty = true;
   }
   // While frozen at a gate, light the keys you owe — computed locally so the amber is instant.
@@ -273,8 +274,9 @@ const PiTV = (function () {
     lastFrozen = fg;
     if (!frozen) { waiting = false; setWanted([]); return; }
     const gt = gateTimes[gatePtr], w = [];
-    if (song) for (const nt of song.notes) {
-      if (Math.abs(nt.t - gt) > 0.05) continue;
+    const ns = song ? song.notes : [];
+    for (let i = lbound(ns, keyT, gt - 0.05); i < ns.length && ns[i].t <= gt + 0.05; i++) {   // only the notes at this gate, not the whole song
+      const nt = ns[i];
       if (playSet && !playSet.has(nt.ch)) continue;
       if (playHand && nt.hand !== playHand) continue;
       if (playTrk != null && nt.ch === 9 && nt.trk !== playTrk) continue;   // a different drummer's track
@@ -794,19 +796,20 @@ const PiTV = (function () {
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);                        // foreground: wiped + redrawn every frame (moving content only)
     if (view === 'notation') (drumMode ? drumView : pianoView).render(W, H);
-    else { if (bgCtx) bgCtx.clearRect(0, 0, W, H); drawGame(W, H); }   // game view has no static staff -> clear the bg layer
+    else { if (bgCtx && staticDirty) { bgCtx.clearRect(0, 0, W, H); staticDirty = false; } drawGame(W, H); }   // game view has no static staff: clear the bg layer ONCE (per view/size change), not every frame — a cleared canvas is a dirty layer the Pi must re-composite
   }
   // Hold 60fps the way game engines do: draw EVERY frame (never skip — motion stays smooth), but
   // adapt the render RESOLUTION to the budget. We track a smoothed draw cost; if it creeps toward the
   // ~16.6ms 60fps budget we shrink resScale (fewer pixels next frame), and when there's slack we grow
   // it back toward full. A 9–15ms dead-zone keeps it from oscillating. The clock advances every rAF,
   // so timing is exact regardless of resolution.
-  let drawMs = 0;
+  let drawMs = 0, slew = 0;
   function frame(ts) {
     requestAnimationFrame(frame);
     if (clockOn && clockPlaying) {                 // R.4: advance the local clock, freezing at gates
       if (lastTs != null) {
-        let n = now + ((ts - lastTs) / 1000) * clockSpeed;
+        let n = now + ((ts - lastTs) / 1000) * clockSpeed * (1 + slew);
+        slew *= 0.97;
         if (freezeMode && gatePtr < gateTimes.length && n >= gateTimes[gatePtr]) n = gateTimes[gatePtr];
         if (n !== now) { now = n; dirty = true; }   // frozen at a gate? nothing moved — skip the repaint
       }
